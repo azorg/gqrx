@@ -413,7 +413,6 @@ void CPlotter::mouseReleaseEvent(QMouseEvent * event)
 //////////////////////////////////////////////////////////////////////
 void CPlotter::wheelEvent(QWheelEvent * event)
 {
-    QPoint pt = event->pos();
     int numDegrees = event->delta() / 8;
     int numSteps = numDegrees / 15;
 
@@ -424,8 +423,26 @@ void CPlotter::wheelEvent(QWheelEvent * event)
         m_MindB += 5*numSteps;
         m_MaxdB -= 5*numSteps;
     }
+    else if (event->modifiers() & Qt::ControlModifier)
+    {
+        // filter width
+        m_DemodLowCutFreq -= numSteps*m_ClickResolution;
+        m_DemodHiCutFreq += numSteps*m_ClickResolution;
+        ClampDemodParameters();
+        emit NewFilterFreq(m_DemodLowCutFreq, m_DemodHiCutFreq);
+    }
+
+    else if (event->modifiers() & Qt::ShiftModifier)
+    {
+        // filter shift
+        m_DemodLowCutFreq += numSteps*m_ClickResolution;
+        m_DemodHiCutFreq += numSteps*m_ClickResolution;
+        ClampDemodParameters();
+        emit NewFilterFreq(m_DemodLowCutFreq, m_DemodHiCutFreq);
+    }
     else
-    { // inc/dec demod frequency if right button NOT pressed
+    {
+        // inc/dec demod frequency
         m_DemodCenterFreq += (numSteps*m_ClickResolution);
         m_DemodCenterFreq = RoundFreq(m_DemodCenterFreq, m_ClickResolution );
         emit NewDemodFreq(m_DemodCenterFreq, m_DemodCenterFreq-m_CenterFreq);
@@ -572,7 +589,6 @@ void CPlotter::GetScreenIntegerFFTData(qint32 MaxHeight, qint32 MaxWidth,
     qint32 i;
     qint32 y;
     qint32 x;
-    qint32 m;
     qint32 ymax = 10000;
     qint32 xprev = -1;
     qint32 maxbin;
@@ -614,7 +630,6 @@ void CPlotter::GetScreenIntegerFFTData(qint32 MaxHeight, qint32 MaxWidth,
             m_pTranslateTbl[i] = m_BinMin + (i*(m_BinMax - m_BinMin)) / m_PlotWidth;
     }
 
-    m = (m_FFTSize);
     if ((m_BinMax-m_BinMin) > m_PlotWidth)
     {
         //if more FFT points than plot points
