@@ -48,8 +48,7 @@ receiver::receiver(const std::string input_device, const std::string audio_devic
       d_filter_offset(0.0),
       d_recording_wav(false),
       d_sniffer_active(false),
-      d_demod(RX_DEMOD_OFF),
-      d_channels(1)
+      d_demod(RX_DEMOD_OFF)
 {
     tb = gr_make_top_block("gqrx");
 
@@ -81,7 +80,7 @@ receiver::receiver(const std::string input_device, const std::string audio_devic
     sniffer = make_sniffer_f();
     /* sniffer_rr is created at each activation. */
 
-    set_demod(RX_DEMOD_FMN);
+    set_demod(RX_DEMOD_NFM);
 }
 
 
@@ -466,7 +465,7 @@ receiver::status receiver::set_agc_manual_gain(int gain)
 receiver::status receiver::set_demod(rx_demod demod)
 {
     bool needs_restart = d_running;
-    bool wide = (d_demod == RX_DEMOD_FMW) || (d_demod == RX_DEMOD_FMS);
+    bool wide_fm = (d_demod == RX_DEMOD_WFM_M) || (d_demod == RX_DEMOD_WFM_S);
     status ret = STATUS_OK;
 
     if (demod == d_demod)
@@ -474,8 +473,6 @@ receiver::status receiver::set_demod(rx_demod demod)
 
     if (d_running)
         stop();
-
-    d_channels = 1;
 
     switch (demod)
     {
@@ -485,7 +482,7 @@ receiver::status receiver::set_demod(rx_demod demod)
         break;
 
     case RX_DEMOD_NONE:
-        if ((d_demod == RX_DEMOD_OFF) || wide)
+        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
         {
             tb->disconnect_all();
             connect_all(RX_CHAIN_NBRX);
@@ -494,7 +491,7 @@ receiver::status receiver::set_demod(rx_demod demod)
         break;
 
     case RX_DEMOD_AM:
-        if ((d_demod == RX_DEMOD_OFF) || wide)
+        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
         {
             tb->disconnect_all();
             connect_all(RX_CHAIN_NBRX);
@@ -502,8 +499,8 @@ receiver::status receiver::set_demod(rx_demod demod)
         rx->set_demod(nbrx::NBRX_DEMOD_AM);
         break;
 
-    case RX_DEMOD_FMN:
-        if ((d_demod == RX_DEMOD_OFF) || wide)
+    case RX_DEMOD_NFM:
+        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
         {
             tb->disconnect_all();
             connect_all(RX_CHAIN_NBRX);
@@ -511,8 +508,8 @@ receiver::status receiver::set_demod(rx_demod demod)
         rx->set_demod(nbrx::NBRX_DEMOD_FM);
         break;
 
-    case RX_DEMOD_FMW:
-        if (!wide)
+    case RX_DEMOD_WFM_M:
+        if (!wide_fm)
         {
             tb->disconnect_all();
             connect_all(RX_CHAIN_WFMRX);
@@ -520,18 +517,17 @@ receiver::status receiver::set_demod(rx_demod demod)
         rx->set_demod(wfmrx::WFMRX_DEMOD_MONO);
         break;
 
-    case RX_DEMOD_FMS:
-        if (!wide)
+    case RX_DEMOD_WFM_S:
+        if (!wide_fm)
         {
             tb->disconnect_all();
             connect_all(RX_CHAIN_WFMRX);
         }
         rx->set_demod(wfmrx::WFMRX_DEMOD_STEREO);
-        d_channels = 2;
         break;
 
     case RX_DEMOD_SSB:
-        if ((d_demod == RX_DEMOD_OFF) || wide)
+        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
         {
             tb->disconnect_all();
             connect_all(RX_CHAIN_NBRX);
@@ -612,8 +608,9 @@ receiver::status receiver::start_audio_recording(const std::string filename)
 
     // not strictly necessary to lock but I think it is safer
     tb->lock();
-    wav_sink = gr_make_wavfile_sink(filename.c_str(), 1, 48000, 16);
+    wav_sink = gr_make_wavfile_sink(filename.c_str(), 2, 48000, 16);
     tb->connect(audio_gain0, 0, wav_sink, 0);
+    tb->connect(audio_gain1, 0, wav_sink, 1);
     tb->unlock();
     d_recording_wav = true;
 
@@ -644,6 +641,7 @@ receiver::status receiver::stop_audio_recording()
     tb->lock();
     wav_sink->close();
     tb->disconnect(audio_gain0, 0, wav_sink, 0);
+    tb->disconnect(audio_gain1, 0, wav_sink, 1);
     wav_sink.reset();
     tb->unlock();
     d_recording_wav = false;
@@ -679,7 +677,7 @@ receiver::status receiver::start_audio_playback(const std::string filename)
     tb->disconnect(rx, 1, audio_gain1, 0);
     tb->disconnect(rx, 0, audio_fft, 0);
     tb->connect(rx, 0, audio_null_sink, 0);
-    tb->connect(wav_src, 0, audio_gain0, 0);
+    tb->connect(wav_src, 0, audio_gain0, 0);  // FIXME: 2 channels
     tb->connect(wav_src, 0, audio_fft, 0);
     start();
 
