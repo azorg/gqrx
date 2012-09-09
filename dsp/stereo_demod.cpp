@@ -38,7 +38,7 @@ static const int MAX_IN  = 1; /* Maximum number of input streams. */
 static const int MIN_OUT = 2; /* Minimum number of output streams. */
 static const int MAX_OUT = 2; /* Maximum number of output streams. */
 
-#define STEREO_DEMOD_PARANOIC
+//#define STEREO_DEMOD_PARANOIC
 
 /*! \brief Create stereo demodulator object.
  *
