@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2011-2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2013 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,10 +42,10 @@ nbrx::nbrx(float quad_rate, float audio_rate)
 
     nb = make_rx_nb_cc(PREF_QUAD_RATE, 3.3, 2.5);
     filter = make_rx_filter(PREF_QUAD_RATE, -5000.0, 5000.0, 1000.0);
-    agc = make_rx_agc_cc(PREF_QUAD_RATE, true, -100, 0, 2, 100, false);
-    sql = gr_make_simple_squelch_cc(-150.0, 0.001);
+    agc = make_rx_agc_cc(PREF_QUAD_RATE, true, -120, 50, 2, 100, false);
+    sql = gr::analog::simple_squelch_cc::make(-150.0, 0.001);
     meter = make_rx_meter_c(DETECTOR_TYPE_RMS);
-    demod_ssb = gr_make_complex_to_real(1);
+    demod_ssb = gr::blocks::complex_to_real::make(1);
     demod_fm = make_rx_demod_fm(PREF_QUAD_RATE, PREF_AUDIO_RATE, 5000.0, 75.0e-6);
     demod_am = make_rx_demod_am(PREF_QUAD_RATE, PREF_AUDIO_RATE, true);
     audio_rr = make_resampler_ff(d_audio_rate/PREF_AUDIO_RATE);
@@ -182,12 +185,14 @@ void nbrx::set_demod(int rx_demod)
         return;
     }
 
-    /* lock graph while we reconfigure */
-    lock();
+    // for now we must depend on top level stop/lock
+    // because of https://github.com/csete/gqrx/issues/120
+    //lock();
 
     /* disconnect current demodulator */
     switch (current_demod) {
 
+    default:
     case NBRX_DEMOD_NONE: /** FIXME! **/
     case NBRX_DEMOD_SSB:
         disconnect(agc, 0, demod_ssb, 0);
@@ -235,7 +240,7 @@ void nbrx::set_demod(int rx_demod)
     }
 
     /* continue processing */
-    unlock();
+    //unlock();
 }
 
 void nbrx::set_fm_maxdev(float maxdev_hz)
@@ -246,4 +251,9 @@ void nbrx::set_fm_maxdev(float maxdev_hz)
 void nbrx::set_fm_deemph(double tau)
 {
     demod_fm->set_tau(tau);
+}
+
+void nbrx::set_am_dcr(bool enabled)
+{
+    demod_am->set_dcr(enabled);
 }

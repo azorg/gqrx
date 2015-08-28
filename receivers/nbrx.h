@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2013 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,8 +23,8 @@
 #ifndef NBRX_H
 #define NBRX_H
 
-#include <gr_simple_squelch_cc.h>
-#include <gr_complex_to_xxx.h>
+#include <gnuradio/analog/simple_squelch_cc.h>
+#include <gnuradio/blocks/complex_to_real.h>
 #include "receivers/receiver_base.h"
 #include "dsp/rx_noise_blanker_cc.h"
 #include "dsp/rx_filter.h"
@@ -92,9 +95,13 @@ public:
     void set_demod(int demod);
 
     /* FM parameters */
-    bool has_fm() {return true; }
+    bool has_fm() { return true; }
     void set_fm_maxdev(float maxdev_hz);
     void set_fm_deemph(double tau);
+
+    /* AM parameters */
+    bool has_am() { return true; }
+    void set_am_dcr(bool enabled);
 
 private:
     bool   d_running;          /*!< Whether receiver is running or not. */
@@ -109,8 +116,8 @@ private:
     rx_nb_cc_sptr             nb;         /*!< Noise blanker. */
     rx_meter_c_sptr           meter;      /*!< Signal strength. */
     rx_agc_cc_sptr            agc;        /*!< Receiver AGC. */
-    gr_simple_squelch_cc_sptr sql;        /*!< Squelch. */
-    gr_complex_to_real_sptr   demod_ssb;  /*!< SSB demodulator. */
+    gr::analog::simple_squelch_cc::sptr sql;        /*!< Squelch. */
+    gr::blocks::complex_to_real::sptr   demod_ssb;  /*!< SSB demodulator. */
     rx_demod_fm_sptr          demod_fm;   /*!< FM demodulator. */
     rx_demod_am_sptr          demod_am;   /*!< AM demodulator. */
     resampler_ff_sptr         audio_rr;   /*!< Audio resampler. */

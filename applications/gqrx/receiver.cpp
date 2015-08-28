@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2011-2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2014 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,21 +20,28 @@
  * the Free Software Foundation, Inc., 51 Franklin Street,
  * Boston, MA 02110-1301, USA.
  */
-#include <iostream>
 #include <cmath>
+#include <iostream>
+#include <unistd.h>
 
-#include <gr_top_block.h>
-#include <gr_multiply_const_ff.h>
-
-#include <osmosdr_source_c.h>
-#include <osmosdr_ranges.h>
+#include <gnuradio/prefs.h>
+#include <gnuradio/top_block.h>
+#include <gnuradio/blocks/multiply_const_ff.h>
+#include <osmosdr/source.h>
+#include <osmosdr/ranges.h>
 
 #include "applications/gqrx/receiver.h"
 #include "dsp/correct_iq_cc.h"
 #include "dsp/rx_fft.h"
-#include "pulseaudio/pa_sink.h"
 #include "receivers/nbrx.h"
 #include "receivers/wfmrx.h"
+
+#ifdef WITH_PULSEAUDIO
+#include "pulseaudio/pa_sink.h"
+#else
+#include <gnuradio/audio/sink.h>
+#endif
+
 
 /*! \brief Public contructor.
  *  \param input_device Input device specifier.
@@ -46,41 +56,73 @@ receiver::receiver(const std::string input_device, const std::string audio_devic
       d_audio_rate(48000),
       d_rf_freq(144800000.0),
       d_filter_offset(0.0),
+      d_recording_iq(false),
       d_recording_wav(false),
       d_sniffer_active(false),
+      d_iq_rev(false),
+      d_dc_cancel(false),
+      d_iq_balance(false),
       d_demod(RX_DEMOD_OFF)
 {
-    tb = gr_make_top_block("gqrx");
+
+    tb = gr::make_top_block("gqrx");
 
     if (input_device.empty())
     {
         // FIXME: other OS
-        src = osmosdr_make_source_c("file=/dev/random,freq=428e6,rate=96000,repeat=true,throttle=true");
+        src = osmosdr::source::make("file=/dev/random,freq=428e6,rate=96000,repeat=true,throttle=true");
     }
     else
     {
-        src = osmosdr_make_source_c(input_device);
+        input_devstr = input_device;
+        src = osmosdr::source::make(input_device);
     }
 
+    // create I/Q sink and close it
+    iq_sink = gr::blocks::file_sink::make(sizeof(gr_complex), "/dev/null", false);
+    iq_sink->set_unbuffered(true);
+    iq_sink->close();
+
     rx = make_nbrx(d_input_rate, d_audio_rate);
-    lo = gr_make_sig_source_c(d_input_rate, GR_SIN_WAVE, 0.0, 1.0);
-    mixer = gr_make_multiply_cc();
+    lo = gr::analog::sig_source_c::make(d_input_rate, gr::analog::GR_SIN_WAVE, 0.0, 1.0);
+    mixer = gr::blocks::multiply_cc::make();
 
-    dc_corr = make_dc_corr_cc(0.01f);
-    iq_fft = make_rx_fft_c(4096, 0);
+    iq_swap = make_iq_swap_cc(false);
+    dc_corr = make_dc_corr_cc(d_input_rate, 1.0);
+    iq_fft = make_rx_fft_c(4096u, 0);
 
-    audio_fft = make_rx_fft_f(3072);
-    audio_gain0 = gr_make_multiply_const_ff(0.1);
-    audio_gain1 = gr_make_multiply_const_ff(0.1);
+    audio_fft = make_rx_fft_f(4096u);
+    audio_gain0 = gr::blocks::multiply_const_ff::make(0.1);
+    audio_gain1 = gr::blocks::multiply_const_ff::make(0.1);
 
+    wav_sink = gr::blocks::wavfile_sink::make("/dev/null", 2,
+                                              (unsigned int) d_audio_rate,
+                                              16);
+
+    audio_udp_sink = make_udp_sink_f();
+
+#ifdef WITH_PULSEAUDIO
     audio_snk = make_pa_sink(audio_device, d_audio_rate, "GQRX", "Audio output");
+#else
+    audio_snk = gr::audio::sink::make(d_audio_rate, audio_device, true);
+#endif
+
+    output_devstr = audio_device;
 
     /* wav sink and source is created when rec/play is started */
-    audio_null_sink = gr_make_null_sink(sizeof(float));
+    audio_null_sink0 = gr::blocks::null_sink::make(sizeof(float));
+    audio_null_sink1 = gr::blocks::null_sink::make(sizeof(float));
     sniffer = make_sniffer_f();
     /* sniffer_rr is created at each activation. */
 
     set_demod(RX_DEMOD_NFM);
+
+#ifndef QT_NO_DEBUG_OUTPUT
+    gr::prefs pref;
+    std::cout << "Using audio backend: "
+              << pref.get_string("audio", "audio_module", "N/A")
+              << std::endl;
+#endif
 }
 
 
@@ -96,7 +138,6 @@ receiver::~receiver()
 /*! \brief Start the receiver. */
 void receiver::start()
 {
-    /* FIXME: Check that flow graph is not running */
     if (!d_running)
     {
         tb->start();
@@ -126,27 +167,68 @@ void receiver::set_input_device(const std::string device)
     if (device.empty())
         return;
 
-    tb->lock();
+    if (input_devstr.compare(device) == 0)
+    {
+#ifndef QT_NO_DEBUG_OUTPUT
+        std::cout << "No change in input device:" << std::endl
+                  << "  old: " << input_devstr << std::endl
+                  << "  new: " << device << std::endl;
+#endif
+        return;
+    }
 
-    tb->disconnect(src, 0, dc_corr, 0);
+    input_devstr = device;
+
+    // tb->lock() can hang occasionally
+    if (d_running)
+    {
+        tb->stop();
+        tb->wait();
+    }
+
+    tb->disconnect(src, 0, iq_swap, 0);
     src.reset();
-    src = osmosdr_make_source_c(device);
-    tb->connect(src, 0, dc_corr, 0);
+    src = osmosdr::source::make(device);
 
-    tb->unlock();
+    tb->connect(src, 0, iq_swap, 0);
+
+    if (d_running)
+        tb->start();
 }
 
 
 /*! \brief Select new audio output device. */
 void receiver::set_output_device(const std::string device)
 {
+    if (output_devstr.compare(device) == 0)
+    {
+#ifndef QT_NO_DEBUG_OUTPUT
+        std::cout << "No change in output device:" << std::endl
+                  << "  old: " << output_devstr << std::endl
+                  << "  new: " << device << std::endl;
+#endif
+        return;
+    }
+
+#ifndef QT_NO_DEBUG_OUTPUT
+    std::cout << "New audio output device:" << std::endl
+              << "   old: " << output_devstr << std::endl
+              << "   new: " << device << std::endl;
+#endif
+
+    output_devstr = device;
+
     tb->lock();
 
     tb->disconnect(audio_gain0, 0, audio_snk, 0);
     tb->disconnect(audio_gain1, 0, audio_snk, 1);
-
     audio_snk.reset();
-    audio_snk = make_pa_sink(device, d_audio_rate); // FIXME: does this keep app and stream name?
+
+#ifdef WITH_PULSEAUDIO
+    audio_snk = make_pa_sink(device, d_audio_rate);
+#else
+    audio_snk = gr::audio::sink::make(d_audio_rate, device, true);
+#endif
 
     tb->connect(audio_gain0, 0, audio_snk, 0);
     tb->connect(audio_gain1, 0, audio_snk, 1);
@@ -154,15 +236,43 @@ void receiver::set_output_device(const std::string device)
     tb->unlock();
 }
 
+/*! \brief Get a list of available antenna connectors. */
+std::vector<std::string> receiver::get_antennas(void)
+{
+    return src->get_antennas();
+}
+
+/*! \brief Select antenna conenctor. */
+void receiver::set_antenna(const std::string &antenna)
+{
+    src->set_antenna(antenna);
+}
 
 /*! \brief Set new input sample rate.
  *  \param rate The desired input rate
- *  \return The actual sample rate set.
+ *  \return The actual sample rate set or 0 if there was an error with the
+ *          device.
  */
 double receiver::set_input_rate(double rate)
 {
     tb->lock();
     d_input_rate = src->set_sample_rate(rate);
+
+    if (d_input_rate == 0)
+    {
+        // This can be the case when no device is attached and gr-osmosdr
+        // puts in a null_source with rate 100 ksps.
+        // ...
+        // Or with some over the top fucked up rtl dongles that appear to work
+        // but return an error here. So we just ignore it.
+        std::cerr << std::endl;
+        std::cerr << "Failed to set RX input rate to " << rate << std::endl;
+        std::cerr << "Your device may not be working properly." << std::endl;
+        std::cerr << std::endl;
+        d_input_rate = rate;
+    }
+
+    dc_corr->set_sample_rate(d_input_rate);
     rx->set_quad_rate(d_input_rate);
     lo->set_sampling_freq(d_input_rate);
     tb->unlock();
@@ -177,7 +287,89 @@ double receiver::get_input_rate()
     return d_input_rate;
 }
 
+/*! \brief Set new analog bandwidth.
+ *  \param bw The new bandwidth.
+ *  \return The actual bandwidth.
+ */
+double receiver::set_analog_bandwidth(double bw)
+{
+    return src->set_bandwidth(bw);
+}
 
+/*! \brief Get current analog bandwidth. */
+double receiver::get_analog_bandwidth()
+{
+    return src->get_bandwidth();
+}
+
+
+
+/*! \brief Set I/Q reversed. */
+void receiver::set_iq_swap(bool reversed)
+{
+    if (reversed == d_iq_rev)
+        return;
+
+    d_iq_rev = reversed;
+    iq_swap->set_enabled(d_iq_rev);
+}
+
+/*! \brief Get current I/Q reversed setting.
+ *  \retval true I/Q swappign is enabled.
+ *  \retval false I/Q swapping is disabled.
+ */
+bool receiver::get_iq_swap(void)
+{
+    return d_iq_rev;
+}
+
+/*! \brief Enable/disable automatic DC removal in the I/Q stream.
+ *  \param enable Whether DC removal should enabled or not.
+ */
+void receiver::set_dc_cancel(bool enable)
+{
+    if (enable == d_dc_cancel)
+        return;
+
+    d_dc_cancel = enable;
+
+    // until we have a way to switch on/off
+    // inside the dc_corr_cc we do a reconf
+    rx_demod demod = d_demod;
+    d_demod = RX_DEMOD_OFF;
+    set_demod(demod);
+}
+
+/*! \brief Get auto DC cancel status.
+ *  \retval true  Automatic DC removal is enabled.
+ *  \retval false Automatic DC removal is disabled.
+ */
+bool receiver::get_dc_cancel(void)
+{
+    return d_dc_cancel;
+}
+
+/*! \brief Enable/disable automatic I/Q balance.
+ *  \param enable Whether automatic I/Q balance should be enabled.
+ */
+void receiver::set_iq_balance(bool enable)
+{
+    if (enable == d_iq_balance)
+        return;
+
+    d_iq_balance = enable;
+
+    src->set_iq_balance_mode(enable ? 2 : 0);
+}
+
+/*! \brief Get auto I/Q balance status.
+ *  \retval true  Automatic I/Q balance is enabled.
+ *  \retval false Automatic I/Q balance is disabled.
+ */
+bool receiver::get_iq_balance(void)
+{
+    return d_iq_balance;
+}
 /*! \brief Set RF frequency.
  *  \param freq_hz The desired frequency in Hz.
  *  \return RX_STATUS_ERROR if an error occurs, e.g. the frequency is out of range.
@@ -204,38 +396,80 @@ double receiver::get_rf_freq()
     return d_rf_freq;
 }
 
+/*! \brief Get the RF frequency range of the current input device.
+ *  \param start The lower limit of the range in Hz.
+ *  \param stop  The upper limit of the range in Hz.
+ *  \param step  The frequency step in Hz.
+ *  \returns STATUS_OK if the range could be retrieved, STATUS_ERROR if an error has occurred.
+ */
+receiver::status receiver::get_rf_range(double *start, double *stop, double *step)
+{
+    osmosdr::freq_range_t range;
+
+    range = src->get_freq_range();
+
+    // currently range is empty for all but E4000
+    if (!range.empty())
+    {
+        if (range.start() < range.stop())
+        {
+            *start = range.start();
+            *stop  = range.stop();
+            *step  = range.step();  /** FIXME: got 0 for rtl-sdr? **/
+
+            return STATUS_OK;
+        }
+    }
+
+    return STATUS_ERROR;
+}
+
+/*! \brief Get the names of available gain stages. */
+std::vector<std::string> receiver::get_gain_names()
+{
+    return src->get_gain_names();
+}
+
+/*! \brief Get gain range for a specific stage.
+ *  \param[in]  name The name of the gain stage.
+ *  \param[out] start Lower limit for this gain setting.
+ *  \param[out] stop  Upper limit for this gain setting.
+ *  \param[out] step  The resolution for this gain setting.
+ *
+ * This function retunrs the range for the requested gain stage.
+ */
+receiver::status receiver::get_gain_range(std::string &name, double *start, double *stop, double *step)
+{
+    osmosdr::gain_range_t range;
+
+    range = src->get_gain_range(name);
+    *start = range.start();
+    *stop  = range.stop();
+    *step  = range.step();
+
+    return STATUS_OK;
+}
+
+receiver::status receiver::set_gain(std::string name, double value)
+{
+    src->set_gain(value, name);
+
+    return STATUS_OK;
+}
+
+double receiver::get_gain(std::string name)
+{
+    return src->get_gain(name);
+}
+
+
 /*! \brief Set RF gain.
  *  \param gain_rel The desired relative gain between 0.0 and 1.0 (use -1 for AGC where supported).
  *  \return RX_STATUS_ERROR if an error occurs, e.g. the gain is out of valid range.
  */
-receiver::status receiver::set_rf_gain(double gain_rel)
+receiver::status receiver::set_auto_gain(bool automatic)
 {
-    if (gain_rel > 1.0)
-        gain_rel = 1.0;
-
-    if (gain_rel < 0.0)
-    {
-        src->set_gain_mode(true);
-    }
-    else
-    {
-        if (src->get_gain_mode())
-            // disable HW AGC
-            src->set_gain_mode(false);
-
-        // convert relative gain to absolute gain
-        osmosdr::gain_range_t range = src->get_gain_range();
-        if (!range.empty())
-        {
-            double gain =  range.start() + gain_rel*(range.stop()-range.start());
-            src->set_gain(gain);
-
-#ifndef QT_NO_DEBUG
-        std::cout << "Gain start/stop/rel/abs:" << range.start() << "/"
-                  << range.stop() << "/" << gain_rel << "/" << gain << std::endl;
-#endif
-        }
-    }
+    src->set_gain_mode(automatic);
 
     return STATUS_OK;
 }
@@ -282,16 +516,16 @@ receiver::status receiver::set_filter(double low, double high, filter_shape shap
     switch (shape) {
 
     case FILTER_SHAPE_SOFT:
-        trans_width = abs(high-low)*0.2;
+        trans_width = abs(high - low) * 0.4;
         break;
 
     case FILTER_SHAPE_SHARP:
-        trans_width = abs(high-low)*0.01;
+        trans_width = abs(high - low) * 0.05;
         break;
 
     case FILTER_SHAPE_NORMAL:
     default:
-        trans_width = abs(high-low)*0.1;
+        trans_width = abs(high - low) * 0.2;
         break;
 
     }
@@ -301,7 +535,7 @@ receiver::status receiver::set_filter(double low, double high, filter_shape shap
     return STATUS_OK;
 }
 
-
+/**
 receiver::status receiver::set_filter_low(double freq_hz)
 {
     return STATUS_OK;
@@ -318,30 +552,14 @@ receiver::status receiver::set_filter_shape(filter_shape shape)
 {
     return STATUS_OK;
 }
+**/
 
-
-receiver::status receiver::set_freq_corr(int ppm)
+receiver::status receiver::set_freq_corr(double ppm)
 {
     src->set_freq_corr(ppm);
 
     return STATUS_OK;
 }
-
-
-receiver::status receiver::set_dc_corr(double dci, double dcq)
-{
-    //src->set_dc_corr(dci, dcq);   FIXME!
-
-    return STATUS_OK;
-}
-
-receiver::status receiver::set_iq_corr(double gain, double phase)
-{
-    //src->set_iq_corr(gain, phase);   FIXME!
-
-    return STATUS_OK;
-}
-
 
 /*! \brief Get current signal power.
  *  \param dbfs Whether to use dbfs or absolute power.
@@ -355,14 +573,20 @@ float receiver::get_signal_pwr(bool dbfs)
     return rx->get_signal_level(dbfs);
 }
 
+/*! \brief Set new FFT size. */
+void receiver::set_iq_fft_size(int newsize)
+{
+    iq_fft->set_fft_size(newsize);
+}
+
 /*! \brief Get latest baseband FFT data. */
-void receiver::get_iq_fft_data(std::complex<float>* fftPoints, int &fftsize)
+void receiver::get_iq_fft_data(std::complex<float>* fftPoints, unsigned int &fftsize)
 {
     iq_fft->get_fft_data(fftPoints, fftsize);
 }
 
 /*! \brief Get latest audio FFT data. */
-void receiver::get_audio_fft_data(std::complex<float>* fftPoints, int &fftsize)
+void receiver::get_audio_fft_data(std::complex<float>* fftPoints, unsigned int &fftsize)
 {
     audio_fft->get_fft_data(fftPoints, fftsize);
 }
@@ -464,74 +688,56 @@ receiver::status receiver::set_agc_manual_gain(int gain)
 
 receiver::status receiver::set_demod(rx_demod demod)
 {
-    bool needs_restart = d_running;
-    bool wide_fm = (d_demod == RX_DEMOD_WFM_M) || (d_demod == RX_DEMOD_WFM_S);
     status ret = STATUS_OK;
 
-    if (demod == d_demod)
-        return ret;
+    // Allow reconf using same demod to provide a workaround
+    // for the "jerky streaming" we may experience with rtl
+    // dongles (the jerkyness disappears when we run this function)
+    //if (demod == d_demod)
+    //    return ret;
 
+    // tb->lock() seems to hang occasioanlly
     if (d_running)
-        stop();
+    {
+        tb->stop();
+        tb->wait();
+    }
+
+    tb->disconnect_all();
 
     switch (demod)
     {
     case RX_DEMOD_OFF:
-        tb->disconnect_all();
         connect_all(RX_CHAIN_NONE);
         break;
 
     case RX_DEMOD_NONE:
-        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
-        {
-            tb->disconnect_all();
-            connect_all(RX_CHAIN_NBRX);
-        }
+        connect_all(RX_CHAIN_NBRX);
         rx->set_demod(nbrx::NBRX_DEMOD_NONE);
         break;
 
     case RX_DEMOD_AM:
-        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
-        {
-            tb->disconnect_all();
-            connect_all(RX_CHAIN_NBRX);
-        }
+        connect_all(RX_CHAIN_NBRX);
         rx->set_demod(nbrx::NBRX_DEMOD_AM);
         break;
 
     case RX_DEMOD_NFM:
-        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
-        {
-            tb->disconnect_all();
-            connect_all(RX_CHAIN_NBRX);
-        }
+        connect_all(RX_CHAIN_NBRX);
         rx->set_demod(nbrx::NBRX_DEMOD_FM);
         break;
 
     case RX_DEMOD_WFM_M:
-        if (!wide_fm)
-        {
-            tb->disconnect_all();
-            connect_all(RX_CHAIN_WFMRX);
-        }
+        connect_all(RX_CHAIN_WFMRX);
         rx->set_demod(wfmrx::WFMRX_DEMOD_MONO);
         break;
 
     case RX_DEMOD_WFM_S:
-        if (!wide_fm)
-        {
-            tb->disconnect_all();
-            connect_all(RX_CHAIN_WFMRX);
-        }
+        connect_all(RX_CHAIN_WFMRX);
         rx->set_demod(wfmrx::WFMRX_DEMOD_STEREO);
         break;
 
     case RX_DEMOD_SSB:
-        if ((d_demod == RX_DEMOD_OFF) || wide_fm)
-        {
-            tb->disconnect_all();
-            connect_all(RX_CHAIN_NBRX);
-        }
+        connect_all(RX_CHAIN_NBRX);
         rx->set_demod(nbrx::NBRX_DEMOD_SSB);
         break;
 
@@ -542,8 +748,8 @@ receiver::status receiver::set_demod(rx_demod demod)
 
     d_demod = demod;
 
-    if (needs_restart)
-        start();
+    if (d_running)
+        tb->start();
 
     return ret;
 }
@@ -563,6 +769,14 @@ receiver::status receiver::set_fm_deemph(double tau)
 {
     if (rx->has_fm())
         rx->set_fm_deemph(tau);
+
+    return STATUS_OK;
+}
+
+receiver::status receiver::set_am_dcr(bool enabled)
+{
+    if (rx->has_am())
+        rx->set_am_dcr(enabled);
 
     return STATUS_OK;
 }
@@ -608,9 +822,19 @@ receiver::status receiver::start_audio_recording(const std::string filename)
 
     // not strictly necessary to lock but I think it is safer
     tb->lock();
-    wav_sink = gr_make_wavfile_sink(filename.c_str(), 2, 48000, 16);
-    tb->connect(audio_gain0, 0, wav_sink, 0);
-    tb->connect(audio_gain1, 0, wav_sink, 1);
+
+    // if this fails, we don't want to go and crash now, do we
+    try {
+        wav_sink->open(filename.c_str());
+        wav_sink->set_sample_rate((unsigned int) d_audio_rate);
+    }
+    catch (std::runtime_error &e) {
+        std::cout << "Error opening " << filename << ": " << e.what() << std::endl;
+        return STATUS_ERROR;
+    }
+
+    tb->connect(rx, 0, wav_sink, 0);
+    tb->connect(rx, 1, wav_sink, 1);
     tb->unlock();
     d_recording_wav = true;
 
@@ -625,14 +849,14 @@ receiver::status receiver::stop_audio_recording()
 {
     if (!d_recording_wav) {
         /* error: we are not recording */
-        std::cout << "ERROR: Can stop audio recorder (not recording)" << std::endl;
+        std::cout << "ERROR: Can not stop audio recorder (not recording)" << std::endl;
 
         return STATUS_ERROR;
     }
     if (!d_running)
     {
         /* receiver is not running */
-        std::cout << "Can not start audio recorder (receiver not running)" << std::endl;
+        std::cout << "Can not stop audio recorder (receiver not running)" << std::endl;
 
         return STATUS_ERROR;
     }
@@ -640,9 +864,8 @@ receiver::status receiver::stop_audio_recording()
     // not strictly necessary to lock but I think it is safer
     tb->lock();
     wav_sink->close();
-    tb->disconnect(audio_gain0, 0, wav_sink, 0);
-    tb->disconnect(audio_gain1, 0, wav_sink, 1);
-    wav_sink.reset();
+    tb->disconnect(rx, 0, wav_sink, 0);
+    tb->disconnect(rx, 1, wav_sink, 1);
     tb->unlock();
     d_recording_wav = false;
 
@@ -655,17 +878,37 @@ receiver::status receiver::stop_audio_recording()
 /*! \brief Start audio playback. */
 receiver::status receiver::start_audio_playback(const std::string filename)
 {
+    if (!d_running)
+    {
+        /* receiver is not running */
+        std::cout << "Can not start audio playback (receiver not running)" << std::endl;
+
+        return STATUS_ERROR;
+    }
+
     try {
-        wav_src = gr_make_wavfile_source(filename.c_str(), false);
+        // output ports set automatically from file
+        wav_src = gr::blocks::wavfile_source::make(filename.c_str(), false);
     }
     catch (std::runtime_error &e) {
         std::cout << "Error loading " << filename << ": " << e.what() << std::endl;
         return STATUS_ERROR;
     }
 
-    /** FIXME: We can only handle 48k for now (should maybe use the audio_rr)? */
-    if (wav_src->sample_rate() != 48000) {
-        std::cout << "BUG: Can not handle sample rate " << wav_src->sample_rate() << std::cout;
+    /** FIXME: We can only handle native rate (should maybe use the audio_rr)? */
+    unsigned int audio_rate = (unsigned int) d_audio_rate;
+    if (wav_src->sample_rate() != audio_rate)
+    {
+        std::cout << "BUG: Can not handle sample rate " << wav_src->sample_rate() << std::endl;
+        wav_src.reset();
+
+        return STATUS_ERROR;
+    }
+
+    /** FIXME: We can only handle stereo files */
+    if (wav_src->channels() != 2)
+    {
+        std::cout << "BUG: Can not handle other than 2 channels. File has " << wav_src->channels() << std::endl;
         wav_src.reset();
 
         return STATUS_ERROR;
@@ -676,10 +919,16 @@ receiver::status receiver::start_audio_playback(const std::string filename)
     tb->disconnect(rx, 0, audio_gain0, 0);
     tb->disconnect(rx, 1, audio_gain1, 0);
     tb->disconnect(rx, 0, audio_fft, 0);
-    tb->connect(rx, 0, audio_null_sink, 0);
-    tb->connect(wav_src, 0, audio_gain0, 0);  // FIXME: 2 channels
+    tb->disconnect(rx, 0, audio_udp_sink, 0);
+    tb->connect(rx, 0, audio_null_sink0, 0); /** FIXME: other channel? */
+    tb->connect(rx, 1, audio_null_sink1, 0); /** FIXME: other channel? */
+    tb->connect(wav_src, 0, audio_gain0, 0);
+    tb->connect(wav_src, 1, audio_gain1, 0);
     tb->connect(wav_src, 0, audio_fft, 0);
+    tb->connect(wav_src, 0, audio_udp_sink, 0);
     start();
+
+    std::cout << "Playing audio from " << filename << std::endl;
 
     return STATUS_OK;
 }
@@ -691,11 +940,15 @@ receiver::status receiver::stop_audio_playback()
     /* disconnect wav source and reconnect receiver */
     stop();
     tb->disconnect(wav_src, 0, audio_gain0, 0);
+    tb->disconnect(wav_src, 1, audio_gain1, 0);
     tb->disconnect(wav_src, 0, audio_fft, 0);
-    tb->disconnect(rx, 0, audio_null_sink, 0);
+    tb->disconnect(wav_src, 0, audio_udp_sink, 0);
+    tb->disconnect(rx, 0, audio_null_sink0, 0);
+    tb->disconnect(rx, 1, audio_null_sink1, 0);
     tb->connect(rx, 0, audio_gain0, 0);
     tb->connect(rx, 1, audio_gain1, 0);
-    tb->connect(rx, 0, audio_fft, 0);
+    tb->connect(rx, 0, audio_fft, 0);  /** FIXME: other channel? */
+    tb->connect(rx, 0, audio_udp_sink, 0);
     start();
 
     /* delete wav_src since we can not change file name */
@@ -705,37 +958,59 @@ receiver::status receiver::stop_audio_playback()
 }
 
 
+/*! \brief Start UDP streaming of audio. */
+receiver::status receiver::start_udp_streaming(const std::string host, int port)
+{
+    audio_udp_sink->start_streaming(host, port);
+    return STATUS_OK;
+}
+
+/*! \brief Stop UDP streaming of audio. */
+receiver::status receiver::stop_udp_streaming()
+{
+    audio_udp_sink->stop_streaming();
+    return STATUS_OK;
+}
+
+
 /*! \brief Start I/Q data recorder.
  *  \param filename The filename where to record.
  */
 receiver::status receiver::start_iq_recording(const std::string filename)
 {
-#if 0
+    receiver::status status = STATUS_OK;
+
     if (d_recording_iq) {
-        /* error - we are already recording */
+        std::cout << __func__ << ": already recording" << std::endl;
         return STATUS_ERROR;
     }
 
-    /* iq_sink was created in the constructor */
+    // iq_sink was created in the constructor
     if (iq_sink) {
-        /* not strictly necessary to lock but I think it is safer */
         tb->lock();
-        iq_sink->open(filename.c_str());
+        if (!iq_sink->open(filename.c_str()))
+        {
+            status = STATUS_ERROR;
+        }
+        else
+        {
+            tb->connect(src, 0, iq_sink, 0);
+            d_recording_iq = true;
+        }
         tb->unlock();
-        d_recording_iq = true;
     }
     else {
-        std::cout << "BUG: I/Q file sink does not exist" << std::endl;
+        std::cout << __func__ << ": I/Q file sink does not exist" << std::endl;
+        return STATUS_ERROR;
     }
-#endif
-    return STATUS_OK;
+
+    return status;
 }
 
 
 /*! \brief Stop I/Q data recorder. */
 receiver::status receiver::stop_iq_recording()
 {
-#if 0
     if (!d_recording_iq) {
         /* error: we are not recording */
         return STATUS_ERROR;
@@ -743,77 +1018,35 @@ receiver::status receiver::stop_iq_recording()
 
     tb->lock();
     iq_sink->close();
+    tb->disconnect(src, 0, iq_sink, 0);
     tb->unlock();
     d_recording_iq = false;
-#endif
+
     return STATUS_OK;
 }
 
-
-/*! \brief Start playback of recorded I/Q data file.
- *  \param filename The file to play from. Must be raw file containing gr_complex samples.
- *  \param samprate The sample rate (currently fixed at 96ksps)
+/*! \brief Seek to position in IQ file source.
+ *  \param pos Byte offset from the beginning of the file.
  */
-receiver::status receiver::start_iq_playback(const std::string filename, float samprate)
+receiver::status receiver::seek_iq_file(long pos)
 {
-#if 0
-    if (samprate != d_bandwidth) {
-        return STATUS_ERROR;
-    }
-
-    try {
-        iq_src = gr_make_file_source(sizeof(gr_complex), filename.c_str(), false);
-    }
-    catch (std::runtime_error &e) {
-        std::cout << "Error loading " << filename << ": " << e.what() << std::endl;
-        return STATUS_ERROR;
-    }
+    receiver::status status = STATUS_OK;
 
     tb->lock();
 
-    /* disconenct hardware source */
-    tb->disconnect(src, 0, nb, 0);
-    tb->disconnect(src, 0, iq_sink, 0);
-
-    /* connect I/Q source via throttle block */
-    tb->connect(iq_src, 0, nb, 0);
-    tb->connect(iq_src, 0, iq_sink, 0);
-    tb->unlock();
-#endif
-    return STATUS_OK;
-}
-
-
-/*! \brief Stop I/Q data file playback.
- *  \return STATUS_OK
- *
- * This method will stop the I/Q data playback, disconnect the file source and throttle
- * blocks, and reconnect the hardware source.
- *
- * FIXME: will probably crash if we try to stop playback that is not running.
- */
-receiver::status receiver::stop_iq_playback()
-{
-#if 0
-    tb->lock();
-
-    /* disconnect I/Q source and throttle block */
-    tb->disconnect(iq_src, 0, nb, 0);
-    tb->disconnect(iq_src, 0, iq_sink, 0);
-
-    /* reconenct hardware source */
-    tb->connect(src, 0, nb, 0);
-    tb->connect(src, 0, iq_sink, 0);
+    if (src->seek(pos, SEEK_SET))
+    {
+        status = STATUS_OK;
+    }
+    else
+    {
+        status = STATUS_ERROR;
+    }
 
     tb->unlock();
 
-    /* delete iq_src since we can not reuse for other files */
-    iq_src.reset();
-#endif
-    return STATUS_OK;
+    return status;
 }
-
-
 
 /*! \brief Start data sniffer.
  *  \param buffsize The buffer that should be used in the sniffer.
@@ -859,12 +1092,10 @@ receiver::status receiver::stop_sniffer()
 }
 
 /*! \brief Get sniffer data. */
-void receiver::get_sniffer_data(float * outbuff, int &num)
+void receiver::get_sniffer_data(float * outbuff, unsigned int &num)
 {
     sniffer->get_samples(outbuff, num);
 }
-
-
 
 /*! \brief Convenience function to connect all blocks. */
 void receiver::connect_all(rx_chain type)
@@ -872,8 +1103,16 @@ void receiver::connect_all(rx_chain type)
     switch (type)
     {
     case RX_CHAIN_NONE:
-        tb->connect(src, 0, dc_corr, 0);
-        tb->connect(dc_corr, 0, iq_fft, 0);
+        tb->connect(src, 0, iq_swap, 0);
+        if (d_dc_cancel)
+        {
+            tb->connect(iq_swap, 0, dc_corr, 0);
+            tb->connect(dc_corr, 0, iq_fft, 0);
+        }
+        else
+        {
+            tb->connect(iq_swap, 0, iq_fft, 0);
+        }
         break;
 
     case RX_CHAIN_NBRX:
@@ -882,12 +1121,22 @@ void receiver::connect_all(rx_chain type)
             rx.reset();
             rx = make_nbrx(d_input_rate, d_audio_rate);
         }
-        tb->connect(src, 0, dc_corr, 0);
-        tb->connect(dc_corr, 0, iq_fft, 0);
-        tb->connect(dc_corr, 0, mixer, 0);
+        tb->connect(src, 0, iq_swap, 0);
+        if (d_dc_cancel)
+        {
+            tb->connect(iq_swap, 0, dc_corr, 0);
+            tb->connect(dc_corr, 0, iq_fft, 0);
+            tb->connect(dc_corr, 0, mixer, 0);
+        }
+        else
+        {
+            tb->connect(iq_swap, 0, iq_fft, 0);
+            tb->connect(iq_swap, 0, mixer, 0);
+        }
         tb->connect(lo, 0, mixer, 1);
         tb->connect(mixer, 0, rx, 0);
         tb->connect(rx, 0, audio_fft, 0);
+        tb->connect(rx, 0, audio_udp_sink, 0);
         tb->connect(rx, 0, audio_gain0, 0);
         tb->connect(rx, 1, audio_gain1, 0);
         tb->connect(audio_gain0, 0, audio_snk, 0);
@@ -900,12 +1149,22 @@ void receiver::connect_all(rx_chain type)
             rx.reset();
             rx = make_wfmrx(d_input_rate, d_audio_rate);
         }
-        tb->connect(src, 0, dc_corr, 0);
-        tb->connect(dc_corr, 0, iq_fft, 0);
-        tb->connect(dc_corr, 0, mixer, 0);
+        tb->connect(src, 0, iq_swap, 0);
+        if (d_dc_cancel)
+        {
+            tb->connect(iq_swap, 0, dc_corr, 0);
+            tb->connect(dc_corr, 0, iq_fft, 0);
+            tb->connect(dc_corr, 0, mixer, 0);
+        }
+        else
+        {
+            tb->connect(iq_swap, 0, iq_fft, 0);
+            tb->connect(iq_swap, 0, mixer, 0);
+        }
         tb->connect(lo, 0, mixer, 1);
         tb->connect(mixer, 0, rx, 0);
         tb->connect(rx, 0, audio_fft, 0);
+        tb->connect(rx, 0, audio_udp_sink, 0);
         tb->connect(rx, 0, audio_gain0, 0);
         tb->connect(rx, 1, audio_gain1, 0);
         tb->connect(audio_gain0, 0, audio_snk, 0);
@@ -916,4 +1175,50 @@ void receiver::connect_all(rx_chain type)
         break;
     }
 
+    // reconnect recorders and sniffers
+    if (d_recording_iq)
+    {
+        tb->connect(src, 0, iq_sink, 0);
+    }
+
+    if (d_recording_wav)
+    {
+        tb->connect(rx, 0, wav_sink, 0);
+        tb->connect(rx, 1, wav_sink, 1);
+    }
+
+    if (d_sniffer_active)
+    {
+        tb->connect(rx, 0, sniffer_rr, 0);
+        tb->connect(sniffer_rr, 0, sniffer, 0);
+    }
+}
+
+void receiver::get_rds_data(std::string &outbuff, int &num)
+{
+    rx->get_rds_data(outbuff, num);
+}
+
+void receiver::start_rds_decoder()
+{
+    stop();
+    rx->start_rds_decoder();
+    start();
+}
+
+void receiver::stop_rds_decoder()
+{
+    stop();
+    rx->stop_rds_decoder();
+    start();
+}
+
+bool receiver::is_rds_decoder_active()
+{
+    return rx->is_rds_decoder_active();
+}
+
+void receiver::reset_rds_parser()
+{
+    rx->reset_rds_parser();
 }

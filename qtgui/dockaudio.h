@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2011 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2013 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +23,10 @@
 #ifndef DOCKAUDIO_H
 #define DOCKAUDIO_H
 
+#include <QColor>
 #include <QDockWidget>
+#include <QSettings>
+#include "audio_options.h"
 
 namespace Ui {
     class DockAudio;
@@ -45,8 +51,8 @@ public:
     ~DockAudio();
 
     void setFftRange(quint64 minf, quint64 maxf);
-    void setNewFttData(double *fftData, int size);
-    int  fftRate() { return 10; }
+    void setNewFttData(float *fftData, int size);
+    int  fftRate() const { return 10; }
 
     void setAudioGain(int gain);
     int  audioGain();
@@ -54,10 +60,26 @@ public:
     void setAudioRecButtonState(bool checked);
     void setAudioPlayButtonState(bool checked);
 
+    void setFftColor(QColor color);
+    void setFftFill(bool enabled);
+
+    void saveSettings(QSettings *settings);
+    void readSettings(QSettings *settings);
+
+public slots:
+    void startAudioRecorder(void);
+    void stopAudioRecorder(void);
+    void setRxFrequency(qint64 freq);
 
 signals:
     /*! \brief Signal emitted when audio gain has changed. Gain is in dB. */
     void audioGainChanged(float gain);
+
+    /*! \brief Audio streaming over UDP has started. */
+    void audioStreamingStarted(const QString host, int port);
+
+    /*! \brief Audio streaming stopped. */
+    void audioStreamingStopped();
 
     /*! \brief Signal emitted when audio recording is started. */
     void audioRecStarted(const QString filename);
@@ -76,14 +98,27 @@ signals:
 
 private slots:
     void on_audioGainSlider_valueChanged(int value);
+    void on_audioStreamButton_clicked(bool checked);
     void on_audioRecButton_clicked(bool checked);
     void on_audioPlayButton_clicked(bool checked);
+    void on_audioConfButton_clicked();
+    void setNewRecDir(const QString &dir);
+    void setNewUdpHost(const QString &host);
+    void setNewUdpPort(int port);
 
 
 private:
     Ui::DockAudio *ui;
-    QString        lastAudio;   /*! Last audio recording. */
-    bool           autoSpan;    /*! Whether to allow mode-dependent auto span. */
+    CAudioOptions *audioOptions; /*! Audio options dialog. */
+    QString        rec_dir;      /*! Location for audio recordings. */
+    QString        last_audio;   /*! Last audio recording. */
+
+    QString        udp_host;     /*! UDP client host name. */
+    int            udp_port;     /*! UDP client port number. */
+
+    bool           autoSpan;     /*! Whether to allow mode-dependent auto span. */
+
+    qint64         rx_freq;      /*! RX frequency used in filenames. */
 };
 
 #endif // DOCKAUDIO_H

@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2012-2013 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +23,7 @@
 #ifndef RECEIVER_BASE_H
 #define RECEIVER_BASE_H
 
-#include <gr_hier_block2.h>
+#include <gnuradio/hier_block2.h>
 
 
 class receiver_base_cf;
@@ -35,12 +38,12 @@ typedef boost::shared_ptr<receiver_base_cf> receiver_base_cf_sptr;
  * outpout audio (or other kind of float data).
  *
  */
-class receiver_base_cf : public gr_hier_block2
+class receiver_base_cf : public gr::hier_block2
 {
 
 public:
     /*! \brief Public contructor.
-     *  \param src_name Descriptive name used in the contructor of gr_hier_block2
+     *  \param src_name Descriptive name used in the contructor of gr::hier_block2
      */
     receiver_base_cf(std::string src_name);
     ~receiver_base_cf();
@@ -60,28 +63,38 @@ public:
     /* the rest is optional */
 
     /* Noise blanker */
-    virtual bool has_nb() { return false; }
-    virtual void set_nb_on(int nbid, bool on) {};
-    virtual void set_nb_threshold(int nbid, float threshold) {};
+    virtual bool has_nb();
+    virtual void set_nb_on(int nbid, bool on);
+    virtual void set_nb_threshold(int nbid, float threshold);
 
     /* Squelch parameter */
-    virtual bool has_sql() { return false; }
-    virtual void set_sql_level(double level_db) {};
-    virtual void set_sql_alpha(double alpha) {};
+    virtual bool has_sql();
+    virtual void set_sql_level(double level_db);
+    virtual void set_sql_alpha(double alpha);
 
     /* AGC */
-    virtual bool has_agc() { return false; }
-    virtual void set_agc_on(bool agc_on) {};
-    virtual void set_agc_hang(bool use_hang) {};
-    virtual void set_agc_threshold(int threshold) {};
-    virtual void set_agc_slope(int slope) {};
-    virtual void set_agc_decay(int decay_ms) {};
-    virtual void set_agc_manual_gain(int gain) {};
+    virtual bool has_agc();
+    virtual void set_agc_on(bool agc_on);
+    virtual void set_agc_hang(bool use_hang);
+    virtual void set_agc_threshold(int threshold);
+    virtual void set_agc_slope(int slope);
+    virtual void set_agc_decay(int decay_ms);
+    virtual void set_agc_manual_gain(int gain);
 
     /* FM parameters */
-    virtual bool has_fm() { return false; }
-    virtual void set_fm_maxdev(float maxdev_hz) {};
-    virtual void set_fm_deemph(double tau) {};
+    virtual bool has_fm();
+    virtual void set_fm_maxdev(float maxdev_hz);
+    virtual void set_fm_deemph(double tau);
+
+    /* AM parameters */
+    virtual bool has_am();
+    virtual void set_am_dcr(bool enabled);
+
+    virtual void get_rds_data(std::string &outbuff, int &num);
+    virtual void start_rds_decoder();
+    virtual void stop_rds_decoder();
+    virtual void reset_rds_parser();
+    virtual bool is_rds_decoder_active();
 
 };
 

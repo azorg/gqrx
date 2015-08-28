@@ -12,7 +12,7 @@
 //  Promote it to the CFreqCtrl class and include file freqctrl.h
 // Initilaize the control in the constructor of the controls parent
 //  ex: ui->frameFreqCtrl->Setup(9, 10000U, 230000000U, 1, UNITS_MHZ );
-// where 9 is the number of display digits, min freq is 10KHz , Max is 230MHz
+// where 9 is the number of display digits, min freq is 10kHz , Max is 230MHz
 // the minimum step size is 1Hz and the freq is displayed as MHz
 //    NOTE: the frequency is a qint64  64 bit integer value
 //  to change frequency call SetFrequency()
@@ -26,7 +26,17 @@
 #include <QFrame>
 #include <QImage>
 
-enum FUNITS{UNITS_HZ, UNITS_KHZ, UNITS_MHZ, UNITS_GHZ,UNITS_SEC,UNITS_MSEC,UNITS_USEC,UNITS_NSEC };
+enum FUNITS
+{
+    UNITS_HZ,
+    UNITS_KHZ,
+    UNITS_MHZ,
+    UNITS_GHZ,
+    UNITS_SEC,
+    UNITS_MSEC,
+    UNITS_USEC,
+    UNITS_NSEC
+};
 
 #define MAX_DIGITS 12
 #define MIN_DIGITS 4
@@ -41,19 +51,19 @@ public:
     QSize sizeHint() const;
 
     //primary access routines
-    void Setup(int NumDigits, qint64 Minf, qint64 Maxf,int MinStep, FUNITS UnitsType);
-    void SetFrequency(qint64 freq);
-    void SetUnits(FUNITS units);
-    void SetDigitColor(QColor cr);
-    void SetBkColor(QColor cr);
-    void SetUnitsColor(QColor cr);
-    void SetHighlightColor(QColor cr);
-    qint64 GetFrequency() { return m_freq; }
+    void setup(int NumDigits, qint64 Minf, qint64 Maxf,int MinStep, FUNITS UnitsType);
+    void setUnits(FUNITS units);
+    void setDigitColor(QColor cr);
+    void setBkColor(QColor cr);
+    void setUnitsColor(QColor cr);
+    void setHighlightColor(QColor cr);
+    qint64 getFrequency() { return m_freq; }
 
 signals:
-    void NewFrequency(qint64 freq); //emitted when frequency has changed
+    void newFrequency(qint64 freq); //emitted when frequency has changed
 
 public slots:
+    void setFrequency(qint64 freq);
 
 protected:      //overrides for this control
     void paintEvent(QPaintEvent *);
@@ -65,18 +75,18 @@ protected:      //overrides for this control
     void keyPressEvent(QKeyEvent *);
 
 private:
-    void UpdateCtrl(bool all);
-    void DrawBkGround(QPainter &Painter);
-    void DrawDigits(QPainter &Painter);
-    void IncDigit();
-    void DecDigit();
-    void IncFreq();
-    void DecFreq();
-    void CursorHome();
-    void CursorEnd();
-    void MoveCursorLeft();
-    void MoveCursorRight();
-    bool InRect(QRect &rect, QPoint &point);
+    void updateCtrl(bool all);
+    void drawBkGround(QPainter &Painter);
+    void drawDigits(QPainter &Painter);
+    void incDigit();
+    void decDigit();
+    void incFreq();
+    void decFreq();
+    void cursorHome();
+    void cursorEnd();
+    void moveCursorLeft();
+    void moveCursorRight();
+    bool inRect(QRect &rect, QPoint &point);
 
     bool m_UpdateAll;
     bool m_ExternalKeyActive;

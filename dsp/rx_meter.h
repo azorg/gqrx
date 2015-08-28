@@ -1,5 +1,8 @@
 /* -*- c++ -*- */
 /*
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
  * Copyright 2011 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
@@ -20,7 +23,7 @@
 #ifndef RX_METER_H
 #define RX_METER_H
 
-#include <gr_sync_block.h>
+#include <gnuradio/sync_block.h>
 
 enum detector_type_e {
     DETECTOR_TYPE_NONE   = 0,
@@ -55,7 +58,7 @@ rx_meter_c_sptr make_rx_meter_c(int detector=DETECTOR_TYPE_RMS);
  * which then can be retrieved using the get_level() and get_level_db()
  * methods.
  */
-class rx_meter_c : public gr_sync_block
+class rx_meter_c : public gr::sync_block
 {
     friend rx_meter_c_sptr make_rx_meter_c(int detector);
 
@@ -85,21 +88,13 @@ public:
      */
     int get_detector_type() {return d_detector;}
 
-    /* In case we add a set_fs(), remember that it must be > 0.0 */
-
-    /*! \brief Get full scale value.
-     *  \return The current full scale value.
-     */
-    float get_fs() {return d_fs;}
-
 private:
-    bool   d_detector;  /*! Detector type. */
+    int    d_detector;  /*! Detector type. */
     float  d_level;     /*! The current level in the range 0.0 to 1.0 */
     float  d_level_db;  /*! The current level in dBFS with FS = 1.0 */
     float  d_sum;       /*! Sum of msamples. */
     float  d_sumsq;     /*! Sum of samples squared. */
     int    d_num;       /*! Number of samples in d_sum and d_sumsq. */
-    float  d_fs;        /*! Full scale value (default = 1.0). */
 
     void reset_stats();
 };

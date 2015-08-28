@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2011-2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2013 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,7 +24,10 @@
 #define DOCKRXOPT_H
 
 #include <QDockWidget>
-#include "qtgui/demod-options.h"
+#include <QSettings>
+#include "qtgui/agc_options.h"
+#include "qtgui/demod_options.h"
+#include "qtgui/nb_options.h"
 
 
 namespace Ui {
@@ -45,7 +51,10 @@ class DockRxOpt : public QDockWidget
 
 public:
 
-    /*! \brief Mode selector entries. */
+    /*! \brief Mode selector entries.
+     *  \note If you change this enum, remember to update the TCP interface.
+     *  \note Keep in same order as the Strings in ModulationStrings, see DockRxOpt.cpp constructor.
+     */
     enum rxopt_mode_idx {
         MODE_OFF        = 0, /*!< Demodulator completely off. */
         MODE_RAW        = 1, /*!< Raw I/Q passthrough. */
@@ -62,22 +71,36 @@ public:
     explicit DockRxOpt(qint64 filterOffsetRange = 90000, QWidget *parent = 0);
     ~DockRxOpt();
 
-    void setFilterOffset(qint64 freq_hz);
+    void readSettings(QSettings *settings);
+    void saveSettings(QSettings *settings);
+
     void setFilterOffsetRange(qint64 range_hz);
 
     void setFilterParam(int lo, int hi);
     void setCurrentFilter(int index);
     int  currentFilter();
 
-    void setRfFreq(qint64 freq_hz);
+    void setCurrentFilterShape(int index);
+    int  currentFilterShape();
 
-    void setCurrentDemod(int demod);
+    void setHwFreq(qint64 freq_hz);
+
     int  currentDemod();
+    QString currentDemodAsString();
 
     float currentMaxdev();
 
+    static QStringList ModulationStrings;
+    static QString GetStringForModulationIndex(int iModulationIndex);
+    static int GetEnumForModulationString(QString param);
+    static bool IsModulationValid(QString strModulation);
+
+public slots:
+    void setCurrentDemod(int demod);
+    void setFilterOffset(qint64 freq_hz);
+
 private:
-    void updateRxFreq();
+    void updateHwFreq();
 
 signals:
     /*! \brief Signal emitted when the channel filter frequency has changed. */
@@ -96,10 +119,16 @@ signals:
     void amDcrToggled(bool enabled);
 
     /*! \brief Signal emitted when baseband gain has changed. Gain is in dB. */
-    void bbGainChanged(float gain);
+    //void bbGainChanged(float gain);
 
     /*! \brief Signal emitted when squelch level has changed. Level is in dBFS. */
     void sqlLevelChanged(double level);
+
+    /*! \brief Signal emitted when auto squelch level is clicked.
+     *
+     * \note Need current signal/noise level returned
+     */
+    double sqlAutoClicked();
 
     /*! \brief Signal emitted when AGC is togglen ON/OFF. */
     void agcToggled(bool agc_on);
@@ -124,34 +153,42 @@ signals:
 
 
 private slots:
-    void on_filterFreq_NewFrequency(qint64 freq);
+    void on_filterFreq_newFrequency(qint64 freq);
     void on_filterCombo_activated(int index);
-    void on_filterButton_clicked();
     void on_modeSelector_activated(int index);
     void on_modeButton_clicked();
+    void on_agcButton_clicked();
+    void on_autoSquelchButton_clicked();
     void on_agcPresetCombo_activated(int index);
-    void on_agcHangButton_toggled(bool checked);
-    void on_agcGainDial_valueChanged(int value);
-    void on_agcThresholdDial_valueChanged(int value);
-    void on_agcSlopeDial_valueChanged(int value);
-    void on_agcDecayDial_valueChanged(int value);
-    void on_sqlSlider_valueChanged(int value);
+    void on_sqlSpinBox_valueChanged(double value);
     void on_nb1Button_toggled(bool checked);
     void on_nb2Button_toggled(bool checked);
-    void on_nb1Threshold_valueChanged(double value);
-    void on_nb2Threshold_valueChanged(double value);
+    void on_nbOptButton_clicked();
 
-    /* Signals coming from demod options pop-up */
+    // Signals coming from noise blanker pop-up
+    void nbOpt_thresholdChanged(int nbid, double value);
+
+    // Signals coming from demod options pop-up
     void demodOpt_fmMaxdevSelected(float max_dev);
     void demodOpt_fmEmphSelected(double tau);
+    void demodOpt_amDcrToggled(bool enabled);
+
+    // Signals coming from AGC options popup
+    void agcOpt_hangToggled(bool checked);
+    void agcOpt_gainChanged(int value);
+    void agcOpt_thresholdChanged(int value);
+    void agcOpt_slopeChanged(int value);
+    void agcOpt_decayChanged(int value);
 
 private:
     Ui::DockRxOpt *ui;        /*! The Qt designer UI file. */
     CDemodOptions *demodOpt;  /*! Demodulator options. */
+    CAgcOptions   *agcOpt;    /*! AGC options. */
+    CNbOptions    *nbOpt;     /*! Noise blanker options. */
 
     bool agc_is_on;
 
-    qint64 rf_freq_hz;   /*! Current RF frequency in Hz. Used to display RX frequency. */
+    qint64 hw_freq_hz;   /*! Current PLL frequency in Hz. */
 };
 
 #endif // DOCKRXOPT_H

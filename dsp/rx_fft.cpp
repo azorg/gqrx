@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2011-2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2013 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,33 +21,33 @@
  * Boston, MA 02110-1301, USA.
  */
 #include <math.h>
-#include <gr_io_signature.h>
-#include <gr_firdes.h>
-#include <gr_complex.h>
-#include <gri_fft.h>
+#include <gnuradio/io_signature.h>
+#include <gnuradio/filter/firdes.h>
+#include <gnuradio/gr_complex.h>
+#include <gnuradio/fft/fft.h>
 #include "dsp/rx_fft.h"
 
 
-rx_fft_c_sptr make_rx_fft_c (int fftsize, int wintype)
+rx_fft_c_sptr make_rx_fft_c (unsigned int fftsize, int wintype)
 {
     return gnuradio::get_initial_sptr(new rx_fft_c (fftsize, wintype));
 }
 
 /*! \brief Create receiver FFT object.
  *  \param fftsize The FFT size.
- *  \param wintype The window type (see gr_firdes::win_type).
+ *  \param wintype The window type (see gr::filter::firdes::win_type).
  *
  */
-rx_fft_c::rx_fft_c(int fftsize, int wintype)
-    : gr_sync_block ("rx_fft_c",
-          gr_make_io_signature(1, 1, sizeof(gr_complex)),
-          gr_make_io_signature(0, 0, 0)),
+rx_fft_c::rx_fft_c(unsigned int fftsize, int wintype)
+    : gr::sync_block ("rx_fft_c",
+          gr::io_signature::make(1, 1, sizeof(gr_complex)),
+          gr::io_signature::make(0, 0, 0)),
       d_fftsize(fftsize),
       d_wintype(-1)
 {
 
     /* create FFT object */
-    d_fft = new gri_fft_complex(d_fftsize, true);
+    d_fft = new gr::fft::fft_complex(d_fftsize, true);
 
     /* allocate circular buffer */
     d_cbuf.set_capacity(d_fftsize);
@@ -71,12 +74,14 @@ int rx_fft_c::work(int noutput_items,
                    gr_vector_const_void_star &input_items,
                    gr_vector_void_star &output_items)
 {
-    int i,j = 0;
+    int i;
     const gr_complex *in = (const gr_complex*)input_items[0];
+    (void) output_items;
 
     /* just throw new samples into the buffer */
     boost::mutex::scoped_lock lock(d_mutex);
-    for (i = 0; i < noutput_items; i++) {
+    for (i = 0; i < noutput_items; i++)
+    {
         d_cbuf.push_back(in[i]);
     }
 
@@ -88,11 +93,12 @@ int rx_fft_c::work(int noutput_items,
  *  \param fftPoints Buffer to copy FFT data
  *  \param fftSize Current FFT size (output).
  */
-void rx_fft_c::get_fft_data(std::complex<float>* fftPoints, int &fftSize)
+void rx_fft_c::get_fft_data(std::complex<float>* fftPoints, unsigned int &fftSize)
 {
     boost::mutex::scoped_lock lock(d_mutex);
 
-    if (d_cbuf.size() < d_fftsize) {
+    if (d_cbuf.size() < d_fftsize)
+    {
         // not enough samples in the buffer
         fftSize = 0;
 
@@ -101,7 +107,7 @@ void rx_fft_c::get_fft_data(std::complex<float>* fftPoints, int &fftSize)
 
     /* perform FFT */
     do_fft(d_cbuf.linearize(), d_cbuf.size());  // FIXME: array_one() and two() may be faster
-    d_cbuf.clear();
+    //d_cbuf.clear();
 
     /* get FFT data */
     memcpy(fftPoints, d_fft->get_outbuf(), sizeof(gr_complex)*d_fftsize);
@@ -115,16 +121,17 @@ void rx_fft_c::get_fft_data(std::complex<float>* fftPoints, int &fftSize)
  * Note that this function does not lock the mutex since the caller, get_fft_data()
  * has alrady locked it.
  */
-void rx_fft_c::do_fft(const gr_complex *data_in, int size)
+void rx_fft_c::do_fft(const gr_complex *data_in, unsigned int size)
 {
     /* apply window, if any */
-    if (d_window.size()) {
+    if (d_window.size())
+    {
         gr_complex *dst = d_fft->get_inbuf();
-        int i;
-        for (i = 0; i < size; i++)
+        for (unsigned int i = 0; i < size; i++)
             dst[i] = data_in[i] * d_window[i];
     }
-    else {
+    else
+    {
         memcpy(d_fft->get_inbuf(), data_in, sizeof(gr_complex)*size);
     }
 
@@ -133,9 +140,10 @@ void rx_fft_c::do_fft(const gr_complex *data_in, int size)
 }
 
 /*! \brief Set new FFT size. */
-void rx_fft_c::set_fft_size(int fftsize)
+void rx_fft_c::set_fft_size(unsigned int fftsize)
 {
-    if (fftsize != d_fftsize) {
+    if (fftsize != d_fftsize)
+    {
         boost::mutex::scoped_lock lock(d_mutex);
 
         d_fftsize = fftsize;
@@ -145,18 +153,19 @@ void rx_fft_c::set_fft_size(int fftsize)
         d_cbuf.set_capacity(d_fftsize);
 
         /* reset window */
+        int wintype = d_wintype; // FIXME: would be nicer with a window_reset()
         d_wintype = -1;
-        set_window_type(d_wintype);
+        set_window_type(wintype);
 
         /* reset FFT object (also reset FFTW plan) */
         delete d_fft;
-        d_fft = new gri_fft_complex (d_fftsize, true);
+        d_fft = new gr::fft::fft_complex (d_fftsize, true);
     }
 
 }
 
 /*! \brief Get currently used FFT size. */
-int rx_fft_c::get_fft_size()
+unsigned int rx_fft_c::get_fft_size()
 {
     return d_fftsize;
 }
@@ -164,19 +173,21 @@ int rx_fft_c::get_fft_size()
 /*! \brief Set new window type. */
 void rx_fft_c::set_window_type(int wintype)
 {
-    if (wintype == d_wintype) {
+    if (wintype == d_wintype)
+    {
         /* nothing to do */
         return;
     }
 
     d_wintype = wintype;
 
-    if ((d_wintype < gr_firdes::WIN_HAMMING) || (d_wintype > gr_firdes::WIN_BLACKMAN_hARRIS)) {
-        d_wintype = gr_firdes::WIN_HAMMING;
+    if ((d_wintype < gr::filter::firdes::WIN_HAMMING) || (d_wintype > gr::filter::firdes::WIN_BLACKMAN_hARRIS))
+    {
+        d_wintype = gr::filter::firdes::WIN_HAMMING;
     }
 
     d_window.clear();
-    d_window = gr_firdes::window((gr_firdes::win_type)d_wintype, d_fftsize, 6.76);
+    d_window = gr::filter::firdes::window((gr::filter::firdes::win_type)d_wintype, d_fftsize, 6.76);
 }
 
 /*! \brief Get currently used window type. */
@@ -188,26 +199,26 @@ int rx_fft_c::get_window_type()
 
 /**   rx_fft_f     **/
 
-rx_fft_f_sptr make_rx_fft_f(int fftsize, int wintype)
+rx_fft_f_sptr make_rx_fft_f(unsigned int fftsize, int wintype)
 {
     return gnuradio::get_initial_sptr(new rx_fft_f (fftsize, wintype));
 }
 
 /*! \brief Create receiver FFT object.
  *  \param fftsize The FFT size.
- *  \param wintype The window type (see gr_firdes::win_type).
+ *  \param wintype The window type (see gr::filter::firdes::win_type).
  *
  */
-rx_fft_f::rx_fft_f(int fftsize, int wintype)
-    : gr_sync_block ("rx_fft_f",
-          gr_make_io_signature(1, 1, sizeof(float)),
-          gr_make_io_signature(0, 0, 0)),
+rx_fft_f::rx_fft_f(unsigned int fftsize, int wintype)
+    : gr::sync_block ("rx_fft_f",
+          gr::io_signature::make(1, 1, sizeof(float)),
+          gr::io_signature::make(0, 0, 0)),
       d_fftsize(fftsize),
       d_wintype(-1)
 {
 
     /* create FFT object */
-    d_fft = new gri_fft_complex(d_fftsize, true);
+    d_fft = new gr::fft::fft_complex(d_fftsize, true);
 
     /* allocate circular buffer */
     d_cbuf.set_capacity(d_fftsize);
@@ -234,12 +245,14 @@ int rx_fft_f::work(int noutput_items,
                    gr_vector_const_void_star &input_items,
                    gr_vector_void_star &output_items)
 {
-    int i,j = 0;
+    int i;
     const float *in = (const float*)input_items[0];
+    (void) output_items;
 
     /* just throw new samples into the buffer */
     boost::mutex::scoped_lock lock(d_mutex);
-    for (i = 0; i < noutput_items; i++) {
+    for (i = 0; i < noutput_items; i++)
+    {
         d_cbuf.push_back(in[i]);
     }
 
@@ -250,11 +263,12 @@ int rx_fft_f::work(int noutput_items,
  *  \param fftPoints Buffer to copy FFT data
  *  \param fftSize Current FFT size (output).
  */
-void rx_fft_f::get_fft_data(std::complex<float>* fftPoints, int &fftSize)
+void rx_fft_f::get_fft_data(std::complex<float>* fftPoints, unsigned int &fftSize)
 {
     boost::mutex::scoped_lock lock(d_mutex);
 
-    if (d_cbuf.size() < d_fftsize) {
+    if (d_cbuf.size() < d_fftsize)
+    {
         // not enough samples in the buffer
         fftSize = 0;
 
@@ -263,7 +277,7 @@ void rx_fft_f::get_fft_data(std::complex<float>* fftPoints, int &fftSize)
 
     /* perform FFT */
     do_fft(d_cbuf.linearize(), d_cbuf.size());  // FIXME: array_one() and two() may be faster
-    d_cbuf.clear();
+    //d_cbuf.clear();
 
     /* get FFT data */
     memcpy(fftPoints, d_fft->get_outbuf(), sizeof(gr_complex)*d_fftsize);
@@ -277,17 +291,19 @@ void rx_fft_f::get_fft_data(std::complex<float>* fftPoints, int &fftSize)
  * Note that this function does not lock the mutex since the caller, get_fft_data()
  * has alrady locked it.
  */
-void rx_fft_f::do_fft(const float *data_in, int size)
+void rx_fft_f::do_fft(const float *data_in, unsigned int size)
 {
     gr_complex *dst = d_fft->get_inbuf();
-    int i;
+    unsigned int i;
 
     /* apply window, and convert to complex */
-    if (d_window.size()) {
+    if (d_window.size())
+    {
         for (i = 0; i < size; i++)
             dst[i] = data_in[i] * d_window[i];
     }
-    else {
+    else
+    {
         for (i = 0; i < size; i++)
             dst[i] = data_in[i];
     }
@@ -298,9 +314,10 @@ void rx_fft_f::do_fft(const float *data_in, int size)
 
 
 /*! \brief Set new FFT size. */
-void rx_fft_f::set_fft_size(int fftsize)
+void rx_fft_f::set_fft_size(unsigned int fftsize)
 {
-    if (fftsize != d_fftsize) {
+    if (fftsize != d_fftsize)
+    {
         boost::mutex::scoped_lock lock(d_mutex);
 
         d_fftsize = fftsize;
@@ -310,17 +327,18 @@ void rx_fft_f::set_fft_size(int fftsize)
         d_cbuf.set_capacity(d_fftsize);
 
         /* reset window */
+        int wintype = d_wintype; // FIXME: would be nicer with a window_reset()
         d_wintype = -1;
-        set_window_type(d_wintype);
+        set_window_type(wintype);
 
         /* reset FFT object (also reset FFTW plan) */
         delete d_fft;
-        d_fft = new gri_fft_complex(d_fftsize, true);
+        d_fft = new gr::fft::fft_complex(d_fftsize, true);
     }
 }
 
 /*! \brief Get currently used FFT size. */
-int rx_fft_f::get_fft_size()
+unsigned int rx_fft_f::get_fft_size()
 {
     return d_fftsize;
 }
@@ -328,19 +346,21 @@ int rx_fft_f::get_fft_size()
 /*! \brief Set new window type. */
 void rx_fft_f::set_window_type(int wintype)
 {
-    if (wintype == d_wintype) {
+    if (wintype == d_wintype)
+    {
         /* nothing to do */
         return;
     }
 
     d_wintype = wintype;
 
-    if ((d_wintype < gr_firdes::WIN_HAMMING) || (d_wintype > gr_firdes::WIN_BLACKMAN_hARRIS)) {
-        d_wintype = gr_firdes::WIN_HAMMING;
+    if ((d_wintype < gr::filter::firdes::WIN_HAMMING) || (d_wintype > gr::filter::firdes::WIN_BLACKMAN_hARRIS))
+    {
+        d_wintype = gr::filter::firdes::WIN_HAMMING;
     }
 
     d_window.clear();
-    d_window = gr_firdes::window((gr_firdes::win_type)d_wintype, d_fftsize, 6.76);
+    d_window = gr::filter::firdes::window((gr::filter::firdes::win_type)d_wintype, d_fftsize, 6.76);
 }
 
 /*! \brief Get currently used window type. */

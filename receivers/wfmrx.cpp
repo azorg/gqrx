@@ -1,5 +1,8 @@
 /* -*- c++ -*- */
 /*
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
  * Copyright 2012 Alexandru Csete OZ9AEC.
  * FM stereo implementation by Alex Grinkov a.grinkov(at)gmail.com.
  *
@@ -39,12 +42,19 @@ wfmrx::wfmrx(float quad_rate, float audio_rate)
     iq_resamp = make_resampler_cc(PREF_QUAD_RATE/d_quad_rate);
 
     filter = make_rx_filter(PREF_QUAD_RATE, -80000.0, 80000.0, 20000.0);
-    sql = gr_make_simple_squelch_cc(-150.0, 0.001);
+    sql = gr::analog::simple_squelch_cc::make(-150.0, 0.001);
     meter = make_rx_meter_c(DETECTOR_TYPE_RMS);
     demod_fm = make_rx_demod_fm(PREF_QUAD_RATE, PREF_MIDLE_RATE, 75000.0, 50.0e-6);
     midle_rr = make_resampler_ff(PREF_MIDLE_RATE/PREF_QUAD_RATE);
     stereo = make_stereo_demod(PREF_MIDLE_RATE, d_audio_rate, true);
     mono   = make_stereo_demod(PREF_MIDLE_RATE, d_audio_rate, false);
+
+    /* create rds blocks but dont connect them */
+    rds = make_rx_rds(PREF_QUAD_RATE);
+    rds_decoder = gr::rds::decoder::make(0, 0);
+    rds_parser = gr::rds::parser::make(0, 0);
+    rds_store = make_rx_rds_store();
+    rds_enabled = false;
 
     connect(self(), 0, iq_resamp, 0);
     connect(iq_resamp, 0, filter, 0);
@@ -229,4 +239,39 @@ void wfmrx::set_fm_maxdev(float maxdev_hz)
 void wfmrx::set_fm_deemph(double tau)
 {
     demod_fm->set_tau(tau);
+}
+
+void wfmrx::get_rds_data(std::string &outbuff, int &num)
+{
+    rds_store->get_message(outbuff, num);
+}
+
+void wfmrx::start_rds_decoder()
+{
+    connect(demod_fm, 0, rds, 0);
+    connect(rds, 0, rds_decoder, 0);
+    msg_connect(rds_decoder, "out", rds_parser, "in");
+    msg_connect(rds_parser, "out", rds_store, "store");
+    rds_enabled=true;
+}
+
+void wfmrx::stop_rds_decoder()
+{
+    lock();
+    disconnect(demod_fm, 0, rds, 0);
+    disconnect(rds, 0, rds_decoder, 0);
+    msg_disconnect(rds_decoder, "out", rds_parser, "in");
+    msg_disconnect(rds_parser, "out", rds_store, "store");
+    unlock();
+    rds_enabled=false;
+}
+
+void wfmrx::reset_rds_parser()
+{
+    rds_parser->reset();
+}
+
+bool wfmrx::is_rds_decoder_active()
+{
+    return rds_enabled;
 }

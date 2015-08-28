@@ -1,5 +1,8 @@
 /* -*- c++ -*- */
 /*
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
  * Copyright 2012 Alexandru Csete OZ9AEC.
  * FM stereo implementation by Alex Grinkov a.grinkov(at)gmail.com.
  *
@@ -21,7 +24,7 @@
 #ifndef WFMRX_H
 #define WFMRX_H
 
-#include <gr_simple_squelch_cc.h>
+#include <gnuradio/analog/simple_squelch_cc.h>
 #include "receivers/receiver_base.h"
 #include "dsp/rx_noise_blanker_cc.h"
 #include "dsp/rx_filter.h"
@@ -29,6 +32,9 @@
 #include "dsp/rx_demod_fm.h"
 #include "dsp/stereo_demod.h"
 #include "dsp/resampler_xx.h"
+#include "dsp/rx_rds.h"
+#include "dsp/rds/decoder.h"
+#include "dsp/rds/parser.h"
 
 class wfmrx;
 
@@ -92,6 +98,12 @@ public:
     void set_fm_maxdev(float maxdev_hz);
     void set_fm_deemph(double tau);
 
+    void get_rds_data(std::string &outbuff, int &num);
+    void start_rds_decoder();
+    void stop_rds_decoder();
+    void reset_rds_parser();
+    bool is_rds_decoder_active();
+
 private:
     bool   d_running;          /*!< Whether receiver is running or not. */
     float  d_quad_rate;        /*!< Input sample rate. */
@@ -103,11 +115,17 @@ private:
     rx_filter_sptr            filter;    /*!< Non-translating bandpass filter.*/
 
     rx_meter_c_sptr           meter;     /*!< Signal strength. */
-    gr_simple_squelch_cc_sptr sql;       /*!< Squelch. */
+    gr::analog::simple_squelch_cc::sptr sql;       /*!< Squelch. */
     rx_demod_fm_sptr          demod_fm;  /*!< FM demodulator. */
     resampler_ff_sptr         midle_rr;  /*!< Resampler. */
     stereo_demod_sptr         stereo;    /*!< FM stereo demodulator. */
     stereo_demod_sptr         mono;      /*!< FM stereo demodulator OFF. */
+
+    rx_rds_sptr               rds;       /*!< RDS decoder */
+    rx_rds_store_sptr         rds_store; /*!< RDS decoded messages */
+    gr::rds::decoder::sptr    rds_decoder;
+    gr::rds::parser::sptr     rds_parser;
+    bool                      rds_enabled;
 };
 
 #endif // WFMRX_H

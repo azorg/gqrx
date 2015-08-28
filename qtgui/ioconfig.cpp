@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2011-2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2014 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,12 +29,17 @@
 #include <QPushButton>
 #include <QDebug>
 
-#include <osmosdr_device.h>
-#include <osmosdr_source_c.h>
-#include <osmosdr_ranges.h>
+#include <osmosdr/device.h>
+#include <osmosdr/source.h>
+#include <osmosdr/ranges.h>
 #include <boost/foreach.hpp>
 
+#ifdef WITH_PULSEAUDIO
 #include "pulseaudio/pa_device_list.h"
+#elif defined(GQRX_OS_MACX)
+#include "osxaudio/device_list.h"
+#endif
+
 #include "qtgui/ioconfig.h"
 #include "ui_ioconfig.h"
 
@@ -42,7 +50,6 @@ CIoConfig::CIoConfig(QSettings *settings, QWidget *parent) :
     m_settings(settings)
 {
     unsigned int i=0;
-    QRegExp rx("'([a-zA-Z0-9 \\-\\_\\/\\.\\,\\(\\)]+)'"); // extracts device description
     QString devstr;
     QString devlabel;
     bool cfgmatch=false; //flag to indicate that device from config was found
@@ -51,19 +58,54 @@ CIoConfig::CIoConfig(QSettings *settings, QWidget *parent) :
 
     QString indev = settings->value("input/device", "").toString();
 
-    // Get list of input devices and store them in the input
-    // device selector together with the device descriptor strings
+    // automatic discovery of FCD does not work on Mac
+    // so we do it ourselves
+#if defined(GQRX_OS_MACX)
+    osxaudio_device_list devices;
+    inDevList = devices.get_input_devices();
+
+    string this_dev;
+    for (i = 0; i < inDevList.size(); i++)
+    {
+        this_dev = inDevList[i].get_name();
+        if (this_dev.find("FUNcube Dongle V1.0") != string::npos)
+        {
+            devstr = "fcd,type=1,device='FUNcube Dongle V1.0'";
+            ui->inDevCombo->addItem("FUNcube Dongle V1.0", QVariant(devstr));
+        }
+        else if (this_dev.find("FUNcube Dongle V2.0") != string::npos)
+        {
+            devstr = "fcd,type=2,device='FUNcube Dongle V2.0'";
+            ui->inDevCombo->addItem("FUNcube Dongle V2.0", QVariant(devstr));
+        }
+
+        if (indev == QString(inDevList[i].get_name().c_str()))
+        {
+            ui->inDevCombo->setCurrentIndex(i);
+            ui->inDevEdit->setText(devstr);
+            cfgmatch = true;
+        }
+    }
+#endif
+
+    // Get list of input devices discovered by gr-osmosdr and store them in
+    // the input device selector together with the device descriptor strings
     osmosdr::devices_t devs = osmosdr::device::find();
 
     qDebug() << __FUNCTION__ << ": Available input devices:";
     BOOST_FOREACH(osmosdr::device_t &dev, devs)
     {
-        devstr = QString(dev.to_string().c_str());
-        if (rx.indexIn(devstr, 0) != -1)
-            devlabel = rx.cap(1);
+        if (dev.count("label"))
+        {
+            devlabel = QString(dev["label"].c_str());
+            dev.erase("label");
+        }
         else
+        {
             devlabel = "Unknown";
+        }
 
+        devstr = QString(dev.to_string().c_str());
         ui->inDevCombo->addItem(devlabel, QVariant(devstr));
 
         // is this the device stored in config?
@@ -74,7 +116,8 @@ CIoConfig::CIoConfig(QSettings *settings, QWidget *parent) :
             cfgmatch = true;
         }
 
-        qDebug() << "   " << i++ << ":"  << devlabel;
+        qDebug() << "   " << i << ":"  << devlabel;
+        ++i;
 
         // Following code could be used for multiple matches
         /* QStringList list;
@@ -85,6 +128,7 @@ CIoConfig::CIoConfig(QSettings *settings, QWidget *parent) :
         } */
 
     }
+
     ui->inDevCombo->addItem(tr("Other..."), QVariant(""));
 
     // If device string from config is not one of the detected devices
@@ -110,13 +154,16 @@ CIoConfig::CIoConfig(QSettings *settings, QWidget *parent) :
 
     updateInputSampleRates(settings->value("input/sample_rate", 0).toInt());
 
+    // Analog bandwidth
+    ui->bwSpinBox->setValue(1.0e-6*settings->value("input/bandwidth", 0.0).toDouble());
+
     // LNB LO
     ui->loSpinBox->setValue(1.0e-6*settings->value("input/lnb_lo", 0.0).toDouble());
 
     // Output device
     QString outdev = settings->value("output/device", "").toString();
 
-#ifdef Q_OS_LINUX
+#ifdef WITH_PULSEAUDIO
     // get list of output devices
     pa_device_list devices;
     outDevList = devices.get_output_devices();
@@ -134,10 +181,26 @@ CIoConfig::CIoConfig(QSettings *settings, QWidget *parent) :
             ui->outDevCombo->setCurrentIndex(i+1);
     }
 
-#elif defined(__APPLE__) && defined(__MACH__) // Works for X11 Qt on Mac OS X too
-    //QString indev = settings.value("input", "").toString();
-    //QString outdev = settings.value("output", "").toString();
-#endif
+#elif defined(GQRX_OS_MACX)
+    // get list of output devices
+    // (already defined) osxaudio_device_list devices;
+    outDevList = devices.get_output_devices();
+
+    qDebug() << __FUNCTION__ << ": Available output devices:";
+    for (i = 0; i < outDevList.size(); i++)
+    {
+        qDebug() << "   " << i << ":" << QString(outDevList[i].get_name().c_str());
+        ui->outDevCombo->addItem(QString(outDevList[i].get_name().c_str()));
+
+        // note that item #i in devlist will be item #(i+1)
+        // in combo box due to "default"
+        if (outdev == QString(outDevList[i].get_name().c_str()))
+            ui->outDevCombo->setCurrentIndex(i+1);
+    }
+
+#else
+    ui->outDevCombo->setEditable(true);
+#endif // WITH_PULSEAUDIO
 
     // Signals and slots
     connect(this, SIGNAL(accepted()), this, SLOT(saveConfig()));
@@ -151,40 +214,6 @@ CIoConfig::~CIoConfig()
 }
 
 
-/*! \brief Utility function to find device name of the Funcube Dogle.
- *
- * Linux: Get list of pulseaudio sources and search for "FUNcube Dongle" in the description
- * Mac: tbd...
- */
-QString CIoConfig::getFcdDeviceName()
-{
-    QString retval("");
-
-#ifdef Q_OS_LINUX
-    pa_device_list devices;
-    vector<pa_device> devlist = devices.get_input_devices();
-    unsigned int i;
-
-    qDebug() << __FUNCTION__ << ": Available input devices";
-    for (i = 0; i < devlist.size(); i++)
-    {
-        qDebug() << "    " << i << ":" << QString(devlist[i].get_description().c_str());
-        if (QString(devlist[i].get_description().c_str()).contains("FUNcube Dongle"))
-        {
-            retval = QString(devlist[i].get_name().c_str());
-        }
-    }
-
-#elif defined(__APPLE__) && defined(__MACH__) // Works for X11 Qt on Mac OS X too
-    // TODO
-#endif
-
-    qDebug() << "  => " << retval;
-
-    return retval;
-}
-
-
 /*! \brief Save configuration. */
 void CIoConfig::saveConfig()
 {
@@ -194,15 +223,28 @@ void CIoConfig::saveConfig()
 
     if (idx > 0)
     {
+#if defined(WITH_PULSEAUDIO) || defined(GQRX_OS_MACX)
         qDebug() << "Output device" << idx << ":" << QString(outDevList[idx-1].get_name().c_str());
         m_settings->setValue("output/device", QString(outDevList[idx-1].get_name().c_str()));
+#endif
     }
     else
-        qDebug() << "Selected output device is 'default' (not saving)";
+    {
+        m_settings->remove("output/device");
+    }
 
     // input settings
     m_settings->setValue("input/device", ui->inDevEdit->text());  // "OK" button disabled if empty
-    m_settings->setValue("input/lnb_lo", (int)ui->loSpinBox->value()*1.0e6);
+
+    qint64 value = (qint64)(ui->bwSpinBox->value()*1.e6);
+    if (value)
+        m_settings->setValue("input/bandwidth", value);
+    else
+        m_settings->remove("input/bandwidth");
+
+    value = (qint64)(ui->loSpinBox->value()*1.e6);
+    if (value)
+        m_settings->setValue("input/lnb_lo", value);
 
     bool ok=false;
     int sr = ui->inSrCombo->currentText().toInt(&ok);
@@ -237,19 +279,37 @@ void CIoConfig::updateInputSampleRates(int rate)
 
     if (ui->inDevEdit->text().contains("fcd"))
     {
-        ui->inSrCombo->addItem("96000");
+        if (ui->inDevCombo->currentText().contains("V2.0"))
+        {
+            ui->inSrCombo->addItem("192000");
+        }
+        else
+        {
+            ui->inSrCombo->addItem("96000");
+        }
     }
-    else if (ui->inDevEdit->text().contains("rtl"))
+    else if (ui->inDevEdit->text().contains("rtl") || ui->inDevEdit->text().contains("rtl_tcp"))
     {
-        if (rate > 0)
-            ui->inSrCombo->addItem(QString("%1").arg(rate));
-        ui->inSrCombo->addItem("910000");
-        ui->inSrCombo->addItem("1024000");
+        ui->inSrCombo->addItem("250000");
         ui->inSrCombo->addItem("1200000");
-        ui->inSrCombo->addItem("1600000");
-        ui->inSrCombo->addItem("2048000");
+        ui->inSrCombo->addItem("1500000");
+        ui->inSrCombo->addItem("1700000");
+        ui->inSrCombo->addItem("2000000");
+        ui->inSrCombo->addItem("2200000");
         ui->inSrCombo->addItem("2400000");
-        ui->inSrCombo->addItem("3000000");
+        ui->inSrCombo->addItem("2560000");
+        ui->inSrCombo->addItem("2700000");
+        ui->inSrCombo->addItem("2800000");
+        ui->inSrCombo->addItem("3200000");
+        if (rate > 0)
+        {
+            ui->inSrCombo->addItem(QString("%1").arg(rate));
+            ui->inSrCombo->setCurrentIndex(11);
+        }
+        else
+        {
+            ui->inSrCombo->setCurrentIndex(2);
+        }
     }
     else if (ui->inDevEdit->text().contains("uhd"))
     {
@@ -260,6 +320,127 @@ void CIoConfig::updateInputSampleRates(int rate)
         ui->inSrCombo->addItem("2000000");
         ui->inSrCombo->addItem("4000000");
         ui->inSrCombo->addItem("8000000");
+    }
+    else if (ui->inDevEdit->text().contains("hackrf"))
+    {
+        if (rate > 0)
+            ui->inSrCombo->addItem(QString("%1").arg(rate));
+        ui->inSrCombo->addItem("8000000");
+        ui->inSrCombo->addItem("10000000");
+        ui->inSrCombo->addItem("12500000");
+        ui->inSrCombo->addItem("16000000");
+        ui->inSrCombo->addItem("20000000");
+    }
+    else if (ui->inDevEdit->text().contains("bladerf"))
+    {
+        if (rate > 0)
+            ui->inSrCombo->addItem(QString("%1").arg(rate));
+        ui->inSrCombo->addItem("160000");
+        ui->inSrCombo->addItem("250000");
+        ui->inSrCombo->addItem("500000");
+        ui->inSrCombo->addItem("1000000");
+        ui->inSrCombo->addItem("2000000");
+        ui->inSrCombo->addItem("5000000");
+        ui->inSrCombo->addItem("8000000");
+        ui->inSrCombo->addItem("10000000");
+        ui->inSrCombo->addItem("15000000");
+        ui->inSrCombo->addItem("20000000");
+        ui->inSrCombo->addItem("25000000");
+        ui->inSrCombo->addItem("30000000");
+        ui->inSrCombo->addItem("35000000");
+        ui->inSrCombo->addItem("40000000");
+    }
+    else if (ui->inDevEdit->text().contains("sdr-iq"))
+    {
+        if (rate > 0)
+            ui->inSrCombo->addItem(QString("%1").arg(rate));
+
+        ui->inSrCombo->addItem("8138");
+        ui->inSrCombo->addItem("16276");
+        ui->inSrCombo->addItem("37793");
+        ui->inSrCombo->addItem("55556");
+        ui->inSrCombo->addItem("111111");
+        ui->inSrCombo->addItem("158730");
+        ui->inSrCombo->addItem("196078");
+    }
+    else if (ui->inDevEdit->text().contains("sdr-ip"))
+    {
+        if (rate > 0)
+            ui->inSrCombo->addItem(QString("%1").arg(rate));
+
+        ui->inSrCombo->addItem("31250");
+        ui->inSrCombo->addItem("32000");
+        ui->inSrCombo->addItem("40000");
+        ui->inSrCombo->addItem("50000");
+        ui->inSrCombo->addItem("62500");
+        ui->inSrCombo->addItem("64000");
+        ui->inSrCombo->addItem("80000");
+        ui->inSrCombo->addItem("100000");
+        ui->inSrCombo->addItem("125000");
+        ui->inSrCombo->addItem("160000");
+        ui->inSrCombo->addItem("200000");
+        ui->inSrCombo->addItem("250000");
+        ui->inSrCombo->addItem("320000");
+        ui->inSrCombo->addItem("400000");
+        ui->inSrCombo->addItem("500000");
+        ui->inSrCombo->addItem("800000");
+        ui->inSrCombo->addItem("1000000");
+        ui->inSrCombo->addItem("1600000");
+        ui->inSrCombo->addItem("2000000");
+    }
+    else if (ui->inDevEdit->text().contains("netsdr"))
+    {
+        if (rate > 0)
+            ui->inSrCombo->addItem(QString("%1").arg(rate));
+
+        ui->inSrCombo->addItem("32000");
+        ui->inSrCombo->addItem("40000");
+        ui->inSrCombo->addItem("50000");
+        ui->inSrCombo->addItem("62500");
+        ui->inSrCombo->addItem("78125");
+        ui->inSrCombo->addItem("80000");
+        ui->inSrCombo->addItem("100000");
+        ui->inSrCombo->addItem("125000");
+        ui->inSrCombo->addItem("156250");
+        ui->inSrCombo->addItem("160000");
+        ui->inSrCombo->addItem("200000");
+        ui->inSrCombo->addItem("250000");
+        ui->inSrCombo->addItem("312500");
+        ui->inSrCombo->addItem("400000");
+        ui->inSrCombo->addItem("500000");
+        ui->inSrCombo->addItem("625000");
+        ui->inSrCombo->addItem("800000");
+        ui->inSrCombo->addItem("1000000");
+        ui->inSrCombo->addItem("1250000");
+        ui->inSrCombo->addItem("2000000");
+    }
+    else if (ui->inDevEdit->text().contains("cloudiq"))
+    {
+        ui->inSrCombo->addItem("48000");
+        ui->inSrCombo->addItem("61440");
+        ui->inSrCombo->addItem("96000");
+        ui->inSrCombo->addItem("122880");
+        ui->inSrCombo->addItem("240000");
+        ui->inSrCombo->addItem("256000");
+        ui->inSrCombo->addItem("370120");
+        ui->inSrCombo->addItem("495483");
+        ui->inSrCombo->addItem("512000");
+        ui->inSrCombo->addItem("614400");
+        ui->inSrCombo->addItem("1024000");
+        ui->inSrCombo->addItem("1228800");
+        ui->inSrCombo->addItem("1807058");
+        if (rate > 0)
+            ui->inSrCombo->insertItem(0, QString("%1").arg(rate));
+        else
+            ui->inSrCombo->setCurrentIndex(4); // select 370 kHz
+    }
+    else if (ui->inDevEdit->text().contains("airspy"))
+    {
+        if (rate > 0)
+            ui->inSrCombo->addItem(QString("%1").arg(rate));
+
+        ui->inSrCombo->addItem("2500000");
+        ui->inSrCombo->addItem("10000000");
     }
 }
 

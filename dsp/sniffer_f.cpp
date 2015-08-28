@@ -1,5 +1,8 @@
 /* -*- c++ -*- */
 /*
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
  * Copyright 2011 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
@@ -18,7 +21,7 @@
  * Boston, MA 02110-1301, USA.
  */
 #include <math.h>
-#include <gr_io_signature.h>
+#include <gnuradio/io_signature.h>
 #include <dsp/sniffer_f.h>
 
 
@@ -37,9 +40,9 @@ sniffer_f_sptr make_sniffer_f(int buffsize)
  *  - How ofter the data will be popped.
  */
 sniffer_f::sniffer_f(int buffsize)
-    : gr_sync_block ("rx_fft_c",
-          gr_make_io_signature(1, 1, sizeof(float)),
-          gr_make_io_signature(0, 0, 0)),
+    : gr::sync_block ("rx_fft_c",
+          gr::io_signature::make(1, 1, sizeof(float)),
+          gr::io_signature::make(0, 0, 0)),
       d_minsamp(1000)
 {
 
@@ -66,8 +69,10 @@ int sniffer_f::work(int noutput_items,
                     gr_vector_const_void_star &input_items,
                     gr_vector_void_star &output_items)
 {
-    int i,j = 0;
+    int i;
     const float *in = (const float *)input_items[0];
+
+    (void) output_items;
 
     boost::mutex::scoped_lock lock(d_mutex);
 
@@ -98,7 +103,7 @@ int  sniffer_f::samples_available()
  *             Should be at least as big as buffer_size().
  *  \param num The number of sampels returned.
  */
-void sniffer_f::get_samples(float * out, int &num)
+void sniffer_f::get_samples(float * out, unsigned int &num)
 {
     boost::mutex::scoped_lock lock(d_mutex);
 

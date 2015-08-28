@@ -1,5 +1,8 @@
 /* -*- c++ -*- */
 /*
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
  * Copyright 2011 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
@@ -20,7 +23,7 @@
 #ifndef SNIFFER_F_H
 #define SNIFFER_F_H
 
-#include <gr_sync_block.h>
+#include <gnuradio/sync_block.h>
 #include <boost/thread/mutex.hpp>
 #include <boost/circular_buffer.hpp>
 
@@ -52,7 +55,7 @@ sniffer_f_sptr make_sniffer_f(int buffsize=48000);
  * exceed the buffer size, old samples will be overwritten. The collected samples
  * can be accessed via the get_samples() method.
  */
-class sniffer_f : public gr_sync_block
+class sniffer_f : public gr::sync_block
 {
     friend sniffer_f_sptr make_sniffer_f(int buffsize);
 
@@ -67,19 +70,19 @@ public:
              gr_vector_void_star &output_items);
 
     int  samples_available();
-    void get_samples(float * buffer, int &num);
+    void get_samples(float * buffer, unsigned int &num);
 
     void set_buffer_size(int newsize);
     int  buffer_size();
 
-    void set_min_samples(int num) {d_minsamp = num;};
-    int min_samples() {return d_minsamp;};
+    void set_min_samples(unsigned int num) {d_minsamp = num;}
+    int min_samples() {return d_minsamp;}
 
 private:
 
     boost::mutex d_mutex;                   /*! Used to prevent concurrent access to buffer. */
     boost::circular_buffer<float> d_buffer; /*! buffer to accumulate samples. */
-    int d_minsamp;                          /*! smallest number of samples we want to return. */
+    unsigned int d_minsamp;                 /*! smallest number of samples we want to return. */
 
 };
 

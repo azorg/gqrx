@@ -1,6 +1,9 @@
 /* -*- c++ -*- */
 /*
- * Copyright 2011-2012 Alexandru Csete OZ9AEC.
+ * Gqrx SDR: Software defined radio receiver powered by GNU Radio and Qt
+ *           http://gqrx.dk/
+ *
+ * Copyright 2011-2014 Alexandru Csete OZ9AEC.
  *
  * Gqrx is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,15 +23,18 @@
 #ifndef RECEIVER_H
 #define RECEIVER_H
 
-#include <gr_top_block.h>
-#include <gr_multiply_const_ff.h>
-#include <gr_multiply_cc.h>
-#include <gr_sig_source_c.h>
-#include <gr_wavfile_sink.h>
-#include <gr_wavfile_source.h>
-#include <gr_null_sink.h>
+#include <string>
 
-#include <osmosdr_source_c.h>
+#include <gnuradio/blocks/file_sink.h>
+#include <gnuradio/blocks/multiply_const_ff.h>
+#include <gnuradio/blocks/multiply_cc.h>
+#include <gnuradio/blocks/null_sink.h>
+#include <gnuradio/analog/sig_source_c.h>
+#include <gnuradio/top_block.h>
+#include <gnuradio/blocks/wavfile_sink.h>
+#include <gnuradio/blocks/wavfile_source.h>
+
+#include <osmosdr/source.h>
 
 #include "dsp/correct_iq_cc.h"
 #include "dsp/rx_noise_blanker_cc.h"
@@ -40,10 +46,14 @@
 #include "dsp/rx_fft.h"
 #include "dsp/sniffer_f.h"
 #include "dsp/resampler_xx.h"
+#include "interfaces/udp_sink_f.h"
 #include "receivers/receiver_base.h"
 
+#ifdef WITH_PULSEAUDIO
 #include <pulseaudio/pa_sink.h>
-#include <pulseaudio/pa_source.h>
+#else
+#include <gnuradio/audio/sink.h>
+#endif
 
 
 /*! \defgroup DSP Digital signal processing library based on GNU Radio */
@@ -103,32 +113,49 @@ public:
     void set_input_device(const std::string device);
     void set_output_device(const std::string device);
 
+    std::vector<std::string> get_antennas(void);
+    void set_antenna(const std::string &antenna);
+
     double set_input_rate(double rate);
     double get_input_rate();
 
+    double set_analog_bandwidth(double bw);
+    double get_analog_bandwidth();
+
+    void set_iq_swap(bool reversed);
+    bool get_iq_swap(void);
+
+    void set_dc_cancel(bool enable);
+    bool get_dc_cancel(void);
+
+    void set_iq_balance(bool enable);
+    bool get_iq_balance(void);
+
     status set_rf_freq(double freq_hz);
     double get_rf_freq();
+    status get_rf_range(double *start, double *stop, double *step);
 
-    status set_rf_gain(double gain_rel);
-
+    std::vector<std::string> get_gain_names();
+    status get_gain_range(std::string &name, double *start, double *stop, double *step);
+    status set_auto_gain(bool automatic);
+    status set_gain(std::string name, double value);
+    double get_gain(std::string name);
 
     status set_filter_offset(double offset_hz);
     double get_filter_offset();
 
     status set_filter(double low, double high, filter_shape shape);
-    status set_filter_low(double freq_hz);
-    status set_filter_high(double freq_hz);
-    status set_filter_shape(filter_shape shape);
+    //status set_filter_low(double freq_hz);
+    //status set_filter_high(double freq_hz);
+    //status set_filter_shape(filter_shape shape);
 
-    status set_freq_corr(int ppm);
-    status set_dc_corr(double dci, double dcq);
-    status set_iq_corr(double gain, double phase);
-
+    status set_freq_corr(double ppm);
 
     float get_signal_pwr(bool dbfs);
 
-    void get_iq_fft_data(std::complex<float>* fftPoints, int &fftsize);
-    void get_audio_fft_data(std::complex<float>* fftPoints, int &fftsize);
+    void set_iq_fft_size(int newsize);
+    void get_iq_fft_data(std::complex<float>* fftPoints, unsigned int &fftsize);
+    void get_audio_fft_data(std::complex<float>* fftPoints, unsigned int &fftsize);
 
     /* Noise blanker */
     status set_nb_on(int nbid, bool on);
@@ -152,6 +179,9 @@ public:
     status set_fm_maxdev(float maxdev_hz);
     status set_fm_deemph(double tau);
 
+    /* AM parameters */
+    status set_am_dcr(bool enabled);
+
     /* Audio parameters */
     status set_af_gain(float gain_db);
     status start_audio_recording(const std::string filename);
@@ -159,16 +189,28 @@ public:
     status start_audio_playback(const std::string filename);
     status stop_audio_playback();
 
+    status start_udp_streaming(const std::string host, int port);
+    status stop_udp_streaming();
+
     /* I/Q recording and playback */
     status start_iq_recording(const std::string filename);
     status stop_iq_recording();
-    status start_iq_playback(const std::string filename, float samprate);
-    status stop_iq_playback();
+    status seek_iq_file(long pos);
 
     /* sample sniffer */
     status start_sniffer(unsigned int samplrate, int buffsize);
     status stop_sniffer();
-    void   get_sniffer_data(float * outbuff, int &num);
+    void   get_sniffer_data(float * outbuff, unsigned int &num);
+
+    bool is_recording_audio(void) const { return d_recording_wav; }
+    bool is_snifffer_active(void) const { return d_sniffer_active; }
+
+    /* rds functions */
+    void get_rds_data(std::string &outbuff, int &num);
+    void start_rds_decoder();
+    void stop_rds_decoder();
+    bool is_rds_decoder_active();
+    void reset_rds_parser();
 
 private:
     void connect_all(rx_chain type);
@@ -179,38 +221,51 @@ private:
     double d_audio_rate;       /*!< Audio output rate. */
     double d_rf_freq;          /*!< Current RF frequency. */
     double d_filter_offset;    /*!< Current filter offset (tune within passband). */
+    bool   d_recording_iq;     /*!< Whether we are recording I/Q file. */
     bool   d_recording_wav;    /*!< Whether we are recording WAV file. */
     bool   d_sniffer_active;   /*!< Only one data decoder allowed. */
+    bool   d_iq_rev;           /*!< Whether I/Q is reversed or not. */
+    bool   d_dc_cancel;        /*!< Enable automatic DC removal. */
+    bool   d_iq_balance;       /*!< Enable automatic IQ balance. */
+
+    std::string input_devstr;  /*!< Current input device string. */
+    std::string output_devstr; /*!< Current output device string. */
 
     rx_demod  d_demod;          /*!< Current demodulator. */
 
-    gr_top_block_sptr         tb;        /*!< The GNU Radio top block. */
+    gr::top_block_sptr         tb;        /*!< The GNU Radio top block. */
 
-    osmosdr_source_c_sptr     src;       /*!< Real time I/Q source. */
-    //rx_source_base_sptr       src;       /*!< Real time I/Q source. */
+    osmosdr::source::sptr     src;       /*!< Real time I/Q source. */
     receiver_base_cf_sptr     rx;        /*!< receiver. */
 
     dc_corr_cc_sptr           dc_corr;   /*!< DC corrector block. */
+    iq_swap_cc_sptr           iq_swap;   /*!< I/Q swapping block. */
 
     rx_fft_c_sptr             iq_fft;     /*!< Baseband FFT block. */
     rx_fft_f_sptr             audio_fft;  /*!< Audio FFT block. */
 
-    gr_sig_source_c_sptr      lo;  /*!< oscillator used for tuning. */
-    gr_multiply_cc_sptr mixer;
+    gr::analog::sig_source_c::sptr      lo;  /*!< oscillator used for tuning. */
+    gr::blocks::multiply_cc::sptr       mixer;
 
+    gr::blocks::multiply_const_ff::sptr audio_gain0; /*!< Audio gain block. */
+    gr::blocks::multiply_const_ff::sptr audio_gain1; /*!< Audio gain block. */
 
-    gr_multiply_const_ff_sptr audio_gain0; /*!< Audio gain block. */
-    gr_multiply_const_ff_sptr audio_gain1; /*!< Audio gain block. */
+    gr::blocks::file_sink::sptr         iq_sink;     /*!< I/Q file sink. */
 
-    gr_wavfile_sink_sptr      wav_sink;   /*!< WAV file sink for recording. */
-    gr_wavfile_source_sptr    wav_src;    /*!< WAV file source for playback. */
-    gr_null_sink_sptr         audio_null_sink; /*!< Audio null sink used during playback. */
+    gr::blocks::wavfile_sink::sptr      wav_sink;   /*!< WAV file sink for recording. */
+    gr::blocks::wavfile_source::sptr    wav_src;    /*!< WAV file source for playback. */
+    gr::blocks::null_sink::sptr         audio_null_sink0; /*!< Audio null sink used during playback. */
+    gr::blocks::null_sink::sptr         audio_null_sink1; /*!< Audio null sink used during playback. */
 
-    sniffer_f_sptr            sniffer;    /*!< Sample sniffer for data decoders. */
-    resampler_ff_sptr         sniffer_rr; /*!< Sniffer resampler. */
+    udp_sink_f_sptr   audio_udp_sink;  /*!< UDP sink to stream audio over the network. */
+    sniffer_f_sptr    sniffer;    /*!< Sample sniffer for data decoders. */
+    resampler_ff_sptr sniffer_rr; /*!< Sniffer resampler. */
 
-    pa_sink_sptr              audio_snk;  /*!< Audio sink. */
-
+#ifdef WITH_PULSEAUDIO
+    pa_sink_sptr              audio_snk;  /*!< Pulse audio sink. */
+#else
+    gr::audio::sink::sptr     audio_snk;  /*!< gr audio sink */
+#endif
 };
 
 #endif // RECEIVER_H
